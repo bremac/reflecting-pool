@@ -14,7 +14,7 @@ load_local_addrs(void)
 {
   struct sockaddr_in *sockaddr_in;
   struct ifaddrs *first, *cur;
-  size_t i;
+  size_t i, count = 0;
   uint32_t *addrs;
 
   if (getifaddrs(&first)) {
@@ -22,11 +22,13 @@ load_local_addrs(void)
     return NULL;
   }
 
-  for (cur = first, i = 0; cur != NULL; cur = cur->ifa_next, i++)
-    ;
+  for (cur = first, i = 0; cur != NULL; cur = cur->ifa_next, i++) {
+    if (cur->ifa_addr != NULL)
+      count++;
+  }
 
   /* The terminator is 0.0.0.0, which is an invalid address. */
-  addrs = calloc(i + 1, sizeof(uint32_t));
+  addrs = calloc(count + 1, sizeof(uint32_t));
 
   if (addrs == NULL) {
     warnx("failed to allocate space for interface addresses");

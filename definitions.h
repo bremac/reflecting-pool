@@ -9,7 +9,6 @@
 #define TARGET_PORT       8001
 
 #define MAX_HEADER_BYTES  8 * 1024
-#define MAX_PACKET_BYTES  64 * 1024
 #define MAX_WINDOW_BYTES  256 * 1024
 #define MAX_WINDOW_SEGS   512
 #define MAX_TCP_SESSIONS  200

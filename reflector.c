@@ -22,8 +22,6 @@
 #include "sessions.h"
 
 
-#define PROTOCOL_TCP      6
-
 // TODO: dump session state on error
 // TODO: IPv6 support
 
@@ -164,7 +162,10 @@ forward_packet(uint8_t *buffer, size_t total_len)
 
   ip_header = (struct iphdr *)buffer;
 
-  if (ip_header->protocol != PROTOCOL_TCP)
+  if (ip_header->version != 4)
+    return; /* We can't handle IPv6 yet. */
+
+  if (ip_header->protocol != IPPROTO_TCP)
     return;
 
   tcp_header = (struct tcphdr *)(buffer + ip_header->ihl * 4);
@@ -307,7 +308,7 @@ run_event_loop(void)
   ssize_t total_len;
   int i, event_count;
   int has_error;
-  uint8_t buffer[MAX_PACKET_BYTES];
+  uint8_t buffer[IP_MAXPACKET];
 
   if ((events = calloc(MAX_EVENTS, sizeof(struct epoll_event))) == NULL)
     err(1, "failed to allocate memory for events");

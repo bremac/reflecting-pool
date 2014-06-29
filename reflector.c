@@ -29,6 +29,8 @@
 // TODO: IPv4 + TCP + port + interface BPF filter
 // TODO: does connect(...) block?
 // TODO: Naming and abstraction inconsistent in this module.
+// TODO: Limit total queued bytes to MAX_WINDOW_BYTES.
+// TODO: Use getopt for listen port, user, target port, and target host.
 
 static uint32_t *local_addrs;
 static struct sessiontable *table;
@@ -185,16 +187,16 @@ dispatch_packet(uint8_t *buffer, size_t total_len)
     dest_port = ntohs(tcp_header->dest);
     seq_lower = ntohl(tcp_header->seq);
 
-    if (!is_local_addr(local_addrs, dest_ip) ||
-            dest_port != LISTEN_PORT) {
+    if (!is_local_address(local_addrs, dest_ip) ||
+        dest_port != LISTEN_PORT) {
         return;
     }
 
     /* Discard packets from other machines with bad checksums.
      * Don't check packets from the local machine, as these are usually
      * wrong until they hit the NIC due to checksum offloading. */
-    if (!is_local_addr(local_addrs, source_ip) &&
-            !are_checksums_valid(ip_header, tcp_header)) {
+    if (!is_local_address(local_addrs, source_ip) &&
+        !are_checksums_valid(ip_header, tcp_header)) {
         warnx("dropping invalid packet");
         return;
     }
@@ -279,12 +281,12 @@ err:
 
 
 void
-drop_privileges(void)
+drop_privileges(const char *username)
 {
     struct passwd *passwd;
 
-    if ((passwd = getpwnam(RESTRICTED_USER)) == NULL)
-        err(1, "no user found with name %s", RESTRICTED_USER);
+    if ((passwd = getpwnam(username)) == NULL)
+        err(1, "no user found with name %s", username);
 
     if (setresgid(passwd->pw_gid, passwd->pw_gid, passwd->pw_gid) < 0)
         err(1, "failed to drop group privileges");
@@ -301,21 +303,31 @@ drop_privileges(void)
 void
 initialize(void)
 {
-    struct epoll_event event;
-
     if ((listener = socket(AF_INET, SOCK_RAW, IPPROTO_TCP)) < 0)
         err(1, "failed to create listener socket");
 
-    drop_privileges();
+    drop_privileges(RESTRICTED_USER);
 
     if (make_socket_nonblocking(listener) < 0)
         err(1, "failed to make raw socket non-blocking");
 
-    if ((local_addrs = load_local_addrs()) == NULL)
+    if ((local_addrs = load_local_addresses()) == NULL)
         exit(1);
 
     if ((table = sessiontable_create()) == NULL)
         exit(1);
+}
+
+void
+run_event_loop(void)
+{
+    struct session *session;
+    struct sockaddr _addr;
+    socklen_t _addr_len;
+    struct epoll_event event, *events;
+    ssize_t len;
+    int i, event_count;
+    uint8_t buffer[IP_MAXPACKET];
 
     if ((epoll_fd = epoll_create1(0)) < 0)
         err(1, "epoll_create1");
@@ -325,18 +337,6 @@ initialize(void)
 
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listener, &event) < 0)
         err(1, "epoll_ctl failed to add listener");
-}
-
-void
-run_event_loop(void)
-{
-    struct session *session;
-    struct sockaddr _addr;
-    socklen_t _addr_len;
-    struct epoll_event *events;
-    ssize_t len;
-    int i, event_count;
-    uint8_t buffer[IP_MAXPACKET];
 
     if ((events = calloc(MAX_EVENTS, sizeof(struct epoll_event))) == NULL)
         err(1, "failed to allocate memory for events");
@@ -352,14 +352,17 @@ run_event_loop(void)
                 if (events[i].events & (EPOLLERR | EPOLLHUP))
                     err(1, "i/o error on raw socket");
 
-                do {
+                while (1) {
                     len = recvfrom(listener, buffer, sizeof(buffer), 0,
                                    &_addr, &_addr_len);
-                    if (len >= 0)
-                        dispatch_packet(buffer, len);
                     if (len < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
                         warn("error reading from raw socket");
-                } while (len >= 0);
+                    if (len < 0)
+                        break;
+
+                    // TODO: handle epoll registration here
+                    dispatch_packet(buffer, len);
+                }
             } else {
                 if (events[i].events & (EPOLLERR | EPOLLHUP)) {
                     session_release(table, events[i].data.ptr);

@@ -9,12 +9,18 @@
 #include "localaddrs.h"
 
 
+static int
+valid_address(struct ifaddrs *ifaddr)
+{
+    return ifaddr->ifa_addr != NULL && ifaddr->ifa_addr->sa_family == AF_INET;
+}
+
 uint32_t *
-load_local_addrs(void)
+load_local_addresses(void)
 {
     struct sockaddr_in *sockaddr_in;
     struct ifaddrs *first, *cur;
-    size_t i, count = 0;
+    size_t i = 0;
     uint32_t *addrs;
 
     if (getifaddrs(&first)) {
@@ -22,23 +28,24 @@ load_local_addrs(void)
         return NULL;
     }
 
-    for (cur = first, i = 0; cur != NULL; cur = cur->ifa_next, i++) {
-        if (cur->ifa_addr != NULL)
-            count++;
+    for (cur = first; cur != NULL; cur = cur->ifa_next) {
+        if (valid_address(cur))
+            i++;
     }
 
     /* The terminator is 0.0.0.0, which is an invalid address. */
-    addrs = calloc(count + 1, sizeof(uint32_t));
+    addrs = calloc(i + 1, sizeof(uint32_t));
 
     if (addrs == NULL) {
         warnx("failed to allocate space for interface addresses");
         return NULL;
     }
 
-    for (cur = first, i = 0; cur != NULL; cur = cur->ifa_next, i++) {
-        if (cur->ifa_addr != NULL) {
+    i = 0;
+    for (cur = first; cur != NULL; cur = cur->ifa_next) {
+        if (valid_address(cur)) {
             sockaddr_in = (struct sockaddr_in *)cur->ifa_addr;
-            addrs[i] = ntohl(sockaddr_in->sin_addr.s_addr);
+            addrs[i++] = ntohl(sockaddr_in->sin_addr.s_addr);
         }
     }
 
@@ -46,7 +53,7 @@ load_local_addrs(void)
 }
 
 int
-is_local_addr(uint32_t *addrs, uint32_t addr)
+is_local_address(uint32_t *addrs, uint32_t addr)
 {
     for (; *addrs; addrs++) {
         if (*addrs == addr)

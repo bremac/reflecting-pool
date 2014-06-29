@@ -5,16 +5,18 @@
 #include <stdint.h>
 
 struct segment {
-  uint64_t seq;
-  ssize_t length;
-  uint8_t *dataptr;
-  uint8_t bytes[0];
+    uint64_t seq;
+    ssize_t length;
+    uint8_t *dataptr;
+    uint8_t fin;
+    uint8_t rst;
+    uint8_t bytes[0];
 };
 
 struct segmentq {
-  size_t length;
-  size_t maxsize;
-  struct segment *segments[0];
+    size_t length;
+    size_t maxsize;
+    struct segment *segments[0];
 };
 
 struct segment *segment_create(size_t);

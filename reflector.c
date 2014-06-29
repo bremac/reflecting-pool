@@ -31,6 +31,9 @@
 // TODO: Naming and abstraction inconsistent in this module.
 // TODO: Limit total queued bytes to MAX_WINDOW_BYTES.
 // TODO: Use getopt for listen port, user, target port, and target host.
+// TODO: Do we need to check SO_ERROR in the epoll loop, or is this
+//       covered by EPOLLERR?
+//       See http://stackoverflow.com/a/6206705
 
 static uint32_t *local_addrs;
 static struct sessiontable *table;
@@ -74,14 +77,15 @@ create_reflector_socket(void)
     addr.sin_family = AF_INET;
     addr.sin_port = htons(TARGET_PORT);
 
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        warn("failed to connect to %s:%d", TARGET_HOST, TARGET_PORT);
-        goto err;
-    }
-
     if (make_socket_nonblocking(fd) < 0) {
         warn("failed to make socket non-blocking for %s:%d",
                  TARGET_HOST, TARGET_PORT);
+        goto err;
+    }
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 &&
+        errno != EINPROGRESS) {
+        warn("failed to connect to %s:%d", TARGET_HOST, TARGET_PORT);
         goto err;
     }
 

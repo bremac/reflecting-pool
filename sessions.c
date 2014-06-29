@@ -148,6 +148,10 @@ session_allocate(struct sessiontable *table, uint32_t source_ip,
     return NULL;
 
   session = &table->sessions[i];
+
+  if (session->state != ST_UNUSED)
+    session_release(table, session);
+
   session->segmentq = segmentq_create(MAX_WINDOW_SEGS);
 
   if (session->segmentq == NULL) {

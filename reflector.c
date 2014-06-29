@@ -15,6 +15,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "checksum.h"
 #include "definitions.h"
 #include "localaddrs.h"
 #include "segments.h"
@@ -30,12 +31,6 @@ static uint32_t *local_addrs;
 static struct sessiontable *table;
 static int listener;
 static int epoll_fd;
-
-int
-is_new_connection(struct tcphdr *tcp_header)
-{
-  return tcp_header->syn && !tcp_header->ack;
-}
 
 // TODO: better name
 static inline int
@@ -185,9 +180,19 @@ forward_packet(uint8_t *buffer, size_t total_len)
     return;
   }
 
-  if (is_new_connection(tcp_header)) {
-    session = session_find(table, source_ip, source_port);
+  /* Discard packets from other machines with bad checksums.
+   * Don't check packets from the local machine, as these are usually
+   * wrong until they hit the NIC due to checksum offloading. */
+  if (!is_local_addr(local_addrs, source_ip) &&
+      !are_checksums_valid(ip_header, tcp_header)) {
+    warnx("dropping invalid packet");
+    return;
+  }
 
+  session = session_find(table, source_ip, source_port);
+
+  /* New TCP connection is being established */
+  if (tcp_header->syn && !tcp_header->ack) {
     if (session != NULL) {
       warnx("received SYN packet for existing session %04x:%d",
             source_ip, source_port);
@@ -209,9 +214,13 @@ forward_packet(uint8_t *buffer, size_t total_len)
 
     if (epoll_register_session(session) < 0)
       goto err;
+  } else if (tcp_header->fin) { /* Graceful shutdown */
+    if (session != NULL)
+      shutdown(session->fd, SHUT_WR);
+  } else if (tcp_header->rst) { /* Death to the transport layer */
+    if (session != NULL)
+      close(session->fd);
   } else {
-    session = session_find(table, source_ip, source_port);
-
     if (session == NULL)  /* not following this session */
       return;
 

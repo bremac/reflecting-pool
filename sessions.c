@@ -70,60 +70,53 @@ sessiontable_hash(uint32_t source_ip, uint16_t source_port)
     return crap8_hash(key, sizeof(key));
 }
 
-static struct session **
-sessiontable_findslot(struct sessiontable *table, uint32_t source_ip,
-                                            uint16_t source_port)
+static struct session *
+sessiontable_find(struct sessiontable *table, uint32_t source_ip,
+                  uint16_t source_port)
 {
+    struct session *session;
     uint32_t idx;
 
-    for (idx = (sessiontable_hash(source_ip, source_port) %
-                ARRAYSIZE(table->lookup));
-         table->lookup[idx] != NULL;
-         idx = (idx + 1) % ARRAYSIZE(table->lookup)) {
-        if (table->lookup[idx] == (struct session *)table) /* Tombstone, skip it */
-            continue;
+    idx = sessiontable_hash(source_ip, source_port) % ARRAYSIZE(table->lookup);
+    session = table->lookup[idx];
 
-        if (table->lookup[idx]->source_ip == source_ip &&
-            table->lookup[idx]->source_port == source_port)
-            return &table->lookup[idx];
+    for (; session != NULL; session = session->next) {
+        if (session->source_ip == source_ip &&
+            session->source_port == source_port)
+            return session;
     }
 
     return NULL;
 }
 
-struct session *
-sessiontable_find(struct sessiontable *table, uint32_t source_ip,
-                                    uint16_t source_port)
-{
-    struct session **slot;
-    slot = sessiontable_findslot(table, source_ip, source_port);
-    return (slot == NULL) ? NULL : *slot;
-}
-
 void
 sessiontable_insert(struct sessiontable *table, struct session *session)
 {
-    uint32_t idx = (sessiontable_hash(session->source_ip,
-                                      session->source_port) %
-                    ARRAYSIZE(table->lookup));
+    uint32_t idx;
 
-    /* Search until we hit an empty slot or a tombstone. */
-    while (table->lookup[idx] != NULL &&
-           table->lookup[idx] != (struct session *)table) {
-        assert (table->lookup[idx]->source_ip != session->source_ip ||
-                table->lookup[idx]->source_port != session->source_port);
-        idx = (idx + 1) % ARRAYSIZE(table->lookup);
-    }
-
+    idx = (sessiontable_hash(session->source_ip, session->source_port) %
+           ARRAYSIZE(table->lookup));
+    session->next = table->lookup[idx];
     table->lookup[idx] = session;
 }
 
 void
 sessiontable_remove(struct sessiontable *table, struct session *session)
 {
-    struct session **slot;
-    slot = sessiontable_findslot(table, session->source_ip, session->source_port);
-    *slot = (struct session *)table;
+    struct session *cursor, **slot;
+    uint32_t idx;
+
+    idx = (sessiontable_hash(session->source_ip, session->source_port) %
+           ARRAYSIZE(table->lookup));
+    slot = &table->lookup[idx];
+
+    for (cursor = table->lookup[idx]; cursor != NULL; cursor = cursor->next) {
+        if (cursor->source_ip == session->source_ip &&
+            cursor->source_port == session->source_port) {
+            *slot = cursor->next;
+        }
+        slot = &cursor->next;
+    }
 }
 
 static inline int
@@ -134,23 +127,25 @@ session_is_dead(struct session *session)
 
 struct session *
 session_allocate(struct sessiontable *table, uint32_t source_ip,
-                                 uint16_t source_port, uint32_t next_seq)
+                 uint16_t source_port, uint32_t next_seq)
 {
     struct session *session;
     size_t i;
 
     for (i = 0; i < ARRAYSIZE(table->sessions); i++) {
-        if (table->sessions[i].state == ST_UNUSED ||
+        if (!table->sessions[i].is_used ||
             session_is_dead(&table->sessions[i]))
             break;
     }
 
-    if (i >= ARRAYSIZE(table->sessions))
+    if (i >= ARRAYSIZE(table->sessions)) {
+        warnx("no available session found");
         return NULL;
+    }
 
     session = &table->sessions[i];
 
-    if (session->state != ST_UNUSED)
+    if (session->is_used)
         session_release(table, session);
 
     session->segmentq = segmentq_create(MAX_WINDOW_SEGS);
@@ -165,8 +160,7 @@ session_allocate(struct sessiontable *table, uint32_t source_ip,
     session->source_ip = source_ip;
     session->source_port = source_port;
     session->fd = -1;
-    session->header_len = 0;
-    session->state = ST_HEADER;
+    session->is_used = 1;
 
     sessiontable_insert(table, session);
 
@@ -175,7 +169,7 @@ session_allocate(struct sessiontable *table, uint32_t source_ip,
 
 struct session *
 session_find(struct sessiontable *table, uint32_t source_ip,
-                         uint16_t source_port)
+             uint16_t source_port)
 {
     return sessiontable_find(table, source_ip, source_port);
 }
@@ -185,7 +179,7 @@ session_release(struct sessiontable *table, struct session *session)
 {
     struct segment *segment;
 
-    if (session == NULL || session->state == ST_UNUSED)
+    if (session == NULL || !session->is_used)
         return;
 
     if (session->fd >= 0)
@@ -197,12 +191,13 @@ session_release(struct sessiontable *table, struct session *session)
     segmentq_destroy(session->segmentq);
     sessiontable_remove(table, session);
 
-    session->state = ST_UNUSED;
+    session->is_used = 0;
 }
 
 int
 session_insert(struct session *session, struct segment *segment)
 {
+    session->latest_timestamp = time(NULL);
     return segmentq_insert(session->segmentq, segment);
 }
 
@@ -223,10 +218,6 @@ session_peek(struct session *session)
         segment->seq += offset;
         segment->dataptr += offset;
     }
-
-    // TODO: Enable header parsing
-    //    if (segment->state != ST_BODY)
-    //     return NULL;
 
     return segment;
 }

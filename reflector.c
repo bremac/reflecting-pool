@@ -7,6 +7,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 
+#include <assert.h>
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -34,6 +35,8 @@
 // TODO: Do we need to check SO_ERROR in the epoll loop, or is this
 //       covered by EPOLLERR?
 //       See http://stackoverflow.com/a/6206705
+// TODO: Rename listener to indicate it is a fd.
+// TODO: Pass time to session_allocate and session_insert
 
 static uint32_t *local_addrs;
 static struct sessiontable *table;
@@ -154,7 +157,7 @@ session_write_all(struct session *session)
         }
 
         if (segment->rst) {
-            close(session->fd);
+            session_release(table, session);
         }
 
         session_pop(session);
@@ -176,13 +179,6 @@ dispatch_packet(uint8_t *buffer, size_t total_len)
     uint16_t source_port, dest_port;
 
     ip_header = (struct iphdr *)buffer;
-
-    if (ip_header->version != 4)
-        return; /* We can't handle IPv6 yet. */
-
-    if (ip_header->protocol != IPPROTO_TCP)
-        return;
-
     tcp_header = (struct tcphdr *)(buffer + ip_header->ihl * 4);
 
     source_ip = ntohl(ip_header->saddr);
@@ -190,6 +186,12 @@ dispatch_packet(uint8_t *buffer, size_t total_len)
     dest_ip = ntohl(ip_header->daddr);
     dest_port = ntohs(tcp_header->dest);
     seq_lower = ntohl(tcp_header->seq);
+
+    if (is_local_address(local_addrs, source_ip) &&
+        source_port == LISTEN_PORT && tcp_header->rst) {
+        session = session_find(table, dest_ip, dest_port);
+        session_release(table, session);
+    }
 
     if (!is_local_address(local_addrs, dest_ip) ||
         dest_port != LISTEN_PORT) {
@@ -312,11 +314,11 @@ initialize(void)
 
     drop_privileges(RESTRICTED_USER);
 
-    if (make_socket_nonblocking(listener) < 0)
-        err(1, "failed to make raw socket non-blocking");
-
     if ((local_addrs = load_local_addresses()) == NULL)
         exit(1);
+
+    if (make_socket_nonblocking(listener) < 0)
+        err(1, "failed to make raw socket non-blocking");
 
     if ((table = sessiontable_create()) == NULL)
         exit(1);
@@ -367,7 +369,7 @@ run_event_loop(void)
                     // TODO: handle epoll registration here
                     dispatch_packet(buffer, len);
                 }
-            } else {
+            } else {  /* The available socket is not the listener. */
                 if (events[i].events & (EPOLLERR | EPOLLHUP)) {
                     session_release(table, events[i].data.ptr);
                 } else if (events[i].events & EPOLLIN) {

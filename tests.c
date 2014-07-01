@@ -71,12 +71,36 @@ test_checksums(void)
     assert(!is_tcp_checksum_valid(ip_header, tcp_header));
 }
 
+void
+test_sessiontable(void)
+{
+    struct sessiontable *table;
+    struct session *s[10];
+
+    assert((table = sessiontable_create()) != NULL);
+    assert((s[0] = session_allocate(table, 0x7f000001, 8000, 1)) != NULL);
+    s[1] = session_find(table, 0x7f000001, 8000);
+    assert(s[0] == s[1]);
+
+    assert((s[1] = session_allocate(table, 0x7f000001, 8001, 1)) != NULL);
+    s[2] = session_find(table, 0x7f000001, 8001);
+    assert(s[1] == s[2]);
+
+    session_release(table, s[1]);
+    assert(session_find(table, 0x7f000001, 8001) == NULL);
+
+    assert((s[1] = session_allocate(table, 0x7f000001, 8001, 1)) != NULL);
+    s[2] = session_find(table, 0x7f000001, 8001);
+    assert(s[1] == s[2]);
+}
+
 int
 main(void)
 {
     test_adjust_seq();
     test_checksums();
     test_localaddrs();
+    test_sessiontable();
 
     puts("All tests passed");
 

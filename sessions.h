@@ -11,22 +11,19 @@
 #define SEQ_INVALID UINT64_MAX
 
 struct session {
-  struct segmentq *segmentq;
-  uint64_t next_seq;
-  time_t latest_timestamp;
-  uint32_t source_ip;
-  uint16_t source_port;
-
-  int fd;
-  char header[MAX_HEADER_BYTES];
-  size_t header_len;
-
-  enum { ST_UNUSED, ST_HEADER, ST_BODY } state;
+    struct session *next;
+    struct segmentq *segmentq;
+    uint64_t next_seq;
+    time_t latest_timestamp;
+    int fd;
+    uint32_t source_ip;
+    uint16_t source_port;
+    uint8_t is_used;
 };
 
 struct sessiontable {
-  struct session *lookup[2 * MAX_TCP_SESSIONS];
-  struct session sessions[MAX_TCP_SESSIONS];
+    struct session *lookup[MAX_TCP_SESSIONS];
+    struct session sessions[MAX_TCP_SESSIONS];
 };
 
 uint64_t adjust_seq(uint32_t, uint64_t);

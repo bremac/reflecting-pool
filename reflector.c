@@ -36,6 +36,11 @@
 //       See http://stackoverflow.com/a/6206705
 // TODO: Pass time to session_allocate and session_insert
 
+int listen_port = -1;
+const char *target_hostname = NULL;
+int target_port = -1;
+const char *username = NULL;
+
 static uint32_t *local_addrs;
 static struct sessiontable *table;
 static int raw_fd;
@@ -66,27 +71,27 @@ create_reflector_socket(void)
     int fd = -1;
 
     if ((fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        warn("failed to create socket for %s:%d", TARGET_HOST, TARGET_PORT);
+        warn("failed to create socket for %s:%d", target_hostname, target_port);
         goto err;
     }
 
-    if (inet_pton(AF_INET, TARGET_HOST, &addr.sin_addr) != 1) {
-        warn("failed to determine IPv4 address for %s", TARGET_HOST);
+    if (inet_pton(AF_INET, target_hostname, &addr.sin_addr) != 1) {
+        warn("failed to determine IPv4 address for %s", target_hostname);
         goto err;
     }
 
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(TARGET_PORT);
+    addr.sin_port = htons(target_port);
 
     if (make_socket_nonblocking(fd) < 0) {
         warn("failed to make socket non-blocking for %s:%d",
-                 TARGET_HOST, TARGET_PORT);
+             target_hostname, target_port);
         goto err;
     }
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 &&
         errno != EINPROGRESS) {
-        warn("failed to connect to %s:%d", TARGET_HOST, TARGET_PORT);
+        warn("failed to connect to %s:%d", target_hostname, target_port);
         goto err;
     }
 
@@ -185,14 +190,15 @@ dispatch_packet(uint8_t *buffer, size_t total_len)
     dest_port = ntohs(tcp_header->dest);
     seq_lower = ntohl(tcp_header->seq);
 
-    if (is_local_address(local_addrs, source_ip) &&
-        source_port == LISTEN_PORT && tcp_header->rst) {
+    if (tcp_header->rst &&
+        is_local_address(local_addrs, source_ip) &&
+        source_port == listen_port) {
         session = session_find(table, dest_ip, dest_port);
         session_release(table, session);
     }
 
     if (!is_local_address(local_addrs, dest_ip) ||
-        dest_port != LISTEN_PORT) {
+        dest_port != listen_port) {
         return;
     }
 
@@ -302,6 +308,73 @@ drop_privileges(const char *username)
         err(1, "failed to drop user privileges");
 }
 
+void
+usage(const char *message)
+{
+    if (message != NULL)
+        fprintf(stderr, "Error: %s\n\n", message);
+
+    fputs("Usage: reflector -l PORT -u USERNAME -h HOST -p PORT\n"
+          "\n"
+          "Mirror inbound traffic on a specific port to another destination\n"
+          "\n"
+          "  -l PORT       listen on PORT for incoming traffic\n"
+          "  -u USERNAME   run as user USERNAME\n"
+          "  -h HOSTNAME   forward traffic to HOSTNAME\n"
+          "  -p PORT       forward traffic to PORT on HOSTNAME\n",
+          stderr);
+
+    exit(1);
+}
+
+int
+parse_port(const char *s)
+{
+    char *end;
+    int port;
+
+    errno = 0;
+    port = strtod(s, &end);
+
+    if (*end || errno == ERANGE || port < 0 || port > 65535)
+        return -1;
+
+    return port;
+}
+
+void
+parse_options(int argc, char **argv)
+{
+    int opt;
+
+    while ((opt = getopt(argc, argv, "h:l:p:u:")) > 0) {
+        switch (opt) {
+        case 'h':
+            target_hostname = optarg;
+            break;
+        case 'l':
+            listen_port = parse_port(optarg);
+            if (listen_port < 0)
+                usage("listen port must be between 0 and 65535");
+            break;
+        case 'p':
+            target_port = parse_port(optarg);
+            if (target_port < 0)
+                usage("target port must be between 0 and 65535");
+            break;
+        case 'u':
+            username = optarg;
+            break;
+        default:
+            usage(NULL);
+        }
+    }
+
+    if (listen_port < 0 || username == NULL ||
+        target_hostname == NULL || target_port < 0)
+        usage(NULL);
+}
+
 #define MAX_EVENTS (MAX_TCP_SESSIONS + 1)
 
 void
@@ -310,7 +383,7 @@ initialize(void)
     if ((raw_fd = socket(AF_INET, SOCK_RAW, IPPROTO_TCP)) < 0)
         err(1, "failed to create raw_fd socket");
 
-    drop_privileges(RESTRICTED_USER);
+    drop_privileges(username);
 
     if ((local_addrs = load_local_addresses()) == NULL)
         exit(1);
@@ -383,8 +456,9 @@ run_event_loop(void)
 }
 
 int
-main(void) /*int argc, const char **argv)*/
+main(int argc, char **argv)
 {
+    parse_options(argc, argv);
     initialize();
     run_event_loop();
     return EXIT_SUCCESS;

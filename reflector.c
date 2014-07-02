@@ -145,7 +145,7 @@ session_write_all(struct session *session)
 
     while ((segment = session_peek(session)) != NULL) {
         if (segment->length > 0) {
-            count = write(session->fd, segment->bytes, segment->length);
+            count = write(session->fd, segment->dataptr, segment->length);
 
             if (count < 0) {
                 if (errno != EAGAIN && errno != EWOULDBLOCK) {

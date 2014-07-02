@@ -27,20 +27,18 @@
 
 // TODO: dump session state on error
 // TODO: IPv6 support
-// TODO: IPv4 + TCP + port + interface BPF filter
-// TODO: does connect(...) block?
+// TODO: port + interface BPF filter?
 // TODO: Naming and abstraction inconsistent in this module.
 // TODO: Limit total queued bytes to MAX_WINDOW_BYTES.
 // TODO: Use getopt for listen port, user, target port, and target host.
 // TODO: Do we need to check SO_ERROR in the epoll loop, or is this
 //       covered by EPOLLERR?
 //       See http://stackoverflow.com/a/6206705
-// TODO: Rename listener to indicate it is a fd.
 // TODO: Pass time to session_allocate and session_insert
 
 static uint32_t *local_addrs;
 static struct sessiontable *table;
-static int listener;
+static int raw_fd;
 static int epoll_fd;
 
 
@@ -309,15 +307,15 @@ drop_privileges(const char *username)
 void
 initialize(void)
 {
-    if ((listener = socket(AF_INET, SOCK_RAW, IPPROTO_TCP)) < 0)
-        err(1, "failed to create listener socket");
+    if ((raw_fd = socket(AF_INET, SOCK_RAW, IPPROTO_TCP)) < 0)
+        err(1, "failed to create raw_fd socket");
 
     drop_privileges(RESTRICTED_USER);
 
     if ((local_addrs = load_local_addresses()) == NULL)
         exit(1);
 
-    if (make_socket_nonblocking(listener) < 0)
+    if (make_socket_nonblocking(raw_fd) < 0)
         err(1, "failed to make raw socket non-blocking");
 
     if ((table = sessiontable_create()) == NULL)
@@ -338,11 +336,11 @@ run_event_loop(void)
     if ((epoll_fd = epoll_create1(0)) < 0)
         err(1, "epoll_create1");
 
-    event.data.fd = listener;
+    event.data.fd = raw_fd;
     event.events = EPOLLIN | EPOLLET;
 
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listener, &event) < 0)
-        err(1, "epoll_ctl failed to add listener");
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, raw_fd, &event) < 0)
+        err(1, "epoll_ctl failed to add raw_fd");
 
     if ((events = calloc(MAX_EVENTS, sizeof(struct epoll_event))) == NULL)
         err(1, "failed to allocate memory for events");
@@ -354,12 +352,12 @@ run_event_loop(void)
             err(1, "epoll_wait");
 
         for (i = 0; i < event_count; i++) {
-            if (events[i].data.fd == listener) {
+            if (events[i].data.fd == raw_fd) {
                 if (events[i].events & (EPOLLERR | EPOLLHUP))
                     err(1, "i/o error on raw socket");
 
                 while (1) {
-                    len = recvfrom(listener, buffer, sizeof(buffer), 0,
+                    len = recvfrom(raw_fd, buffer, sizeof(buffer), 0,
                                    &_addr, &_addr_len);
                     if (len < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
                         warn("error reading from raw socket");
@@ -369,7 +367,7 @@ run_event_loop(void)
                     // TODO: handle epoll registration here
                     dispatch_packet(buffer, len);
                 }
-            } else {  /* The available socket is not the listener. */
+            } else {  /* The available socket is not the raw_fd. */
                 if (events[i].events & (EPOLLERR | EPOLLHUP)) {
                     session_release(table, events[i].data.ptr);
                 } else if (events[i].events & EPOLLIN) {

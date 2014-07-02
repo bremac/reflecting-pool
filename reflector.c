@@ -317,20 +317,20 @@ drop_privileges(const char *username)
 }
 
 void
-usage(const char *message)
+usage(const char *command_name, const char *message)
 {
     if (message != NULL)
-        fprintf(stderr, "Error: %s\n\n", message);
+        fprintf(stderr, "%s: %s\n\n", command_name, message);
 
-    fputs("Usage: reflector -l PORT -u USERNAME -h HOST -p PORT\n"
-          "\n"
-          "Mirror inbound traffic on a specific port to another destination\n"
-          "\n"
-          "  -l PORT       listen on PORT for incoming traffic\n"
-          "  -u USERNAME   run as user USERNAME\n"
-          "  -h HOSTNAME   forward traffic to HOSTNAME\n"
-          "  -p PORT       forward traffic to PORT on HOSTNAME\n",
-          stderr);
+    fprintf(stderr,
+"Usage: %s -l PORT -u USERNAME -h HOST -p PORT\n"
+"\n"
+"Mirror inbound traffic on a specific port to another destination.\n"
+"\n"
+"  -l PORT       listen on PORT for incoming traffic\n"
+"  -u USERNAME   run as user USERNAME\n"
+"  -h HOSTNAME   forward traffic to HOSTNAME\n"
+"  -p PORT       forward traffic to PORT on HOSTNAME\n", command_name);
 
     exit(1);
 }
@@ -363,25 +363,25 @@ parse_options(int argc, char **argv)
         case 'l':
             listen_port = parse_port(optarg);
             if (listen_port < 0)
-                usage("listen port must be between 0 and 65535");
+                usage(argv[0], "listen port must be between 0 and 65535");
             break;
         case 'p':
             /* Validate the target port (getaddrinfo needs a string.) */
             if (parse_port(optarg) < 0)
-                usage("target port must be between 0 and 65535");
+                usage(argv[0], "target port must be between 0 and 65535");
             target_port = optarg;
             break;
         case 'u':
             username = optarg;
             break;
         default:
-            usage(NULL);
+            usage(argv[0], NULL);
         }
     }
 
     if (listen_port < 0 || username == NULL ||
         target_hostname == NULL || target_port == NULL)
-        usage(NULL);
+        usage(argv[0], NULL);
 }
 
 #define MAX_EVENTS (MAX_TCP_SESSIONS + 1)

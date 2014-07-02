@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 
@@ -38,7 +39,7 @@
 
 int listen_port = -1;
 const char *target_hostname = NULL;
-int target_port = -1;
+const char *target_port = NULL;
 const char *username = NULL;
 
 static uint32_t *local_addrs;
@@ -63,44 +64,51 @@ make_socket_nonblocking(int fd)
     return 0;
 }
 
-// TODO: modern idioms?
 static int
 create_reflector_socket(void)
 {
-    struct sockaddr_in addr;
+    struct addrinfo hints, *result = NULL;
+    int error;
     int fd = -1;
 
-    if ((fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        warn("failed to create socket for %s:%d", target_hostname, target_port);
+    memset(&hints, 0, sizeof(struct addrinfo));
+    hints.ai_family = AF_INET;       // TODO: Use AF_UNSPEC and retry logic.
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = 0;
+    hints.ai_protocol = IPPROTO_TCP;
+    error = getaddrinfo(target_hostname, target_port, &hints, &result);
+
+    if (error != 0) {
+        warnx("connecting to target failed: %s", gai_strerror(error));
         goto err;
     }
 
-    if (inet_pton(AF_INET, target_hostname, &addr.sin_addr) != 1) {
-        warn("failed to determine IPv4 address for %s", target_hostname);
+    if ((fd = socket(result->ai_family, result->ai_socktype,
+                     result->ai_protocol)) < 0) {
+        warn("failed to create socket for %s:%s", target_hostname, target_port);
         goto err;
     }
-
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(target_port);
 
     if (make_socket_nonblocking(fd) < 0) {
-        warn("failed to make socket non-blocking for %s:%d",
+        warn("failed to make socket non-blocking for %s:%s",
              target_hostname, target_port);
         goto err;
     }
 
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 &&
+    if (connect(fd, result->ai_addr, result->ai_addrlen) < 0 &&
         errno != EINPROGRESS) {
-        warn("failed to connect to %s:%d", target_hostname, target_port);
+        warn("failed to connect to %s:%s", target_hostname, target_port);
         goto err;
     }
 
+    freeaddrinfo(result);
     return fd;
 
 err:
     if (fd >= 0)
         close(fd);
 
+    freeaddrinfo(result);
     return -1;
 }
 
@@ -358,9 +366,10 @@ parse_options(int argc, char **argv)
                 usage("listen port must be between 0 and 65535");
             break;
         case 'p':
-            target_port = parse_port(optarg);
-            if (target_port < 0)
+            /* Validate the target port (getaddrinfo needs a string.) */
+            if (parse_port(optarg) < 0)
                 usage("target port must be between 0 and 65535");
+            target_port = optarg;
             break;
         case 'u':
             username = optarg;
@@ -371,7 +380,7 @@ parse_options(int argc, char **argv)
     }
 
     if (listen_port < 0 || username == NULL ||
-        target_hostname == NULL || target_port < 0)
+        target_hostname == NULL || target_port == NULL)
         usage(NULL);
 }
 

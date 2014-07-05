@@ -31,7 +31,6 @@
 // TODO: port + interface BPF filter?
 // TODO: Naming and abstraction inconsistent in this module.
 // TODO: Limit total queued bytes to MAX_WINDOW_BYTES.
-// TODO: Use getopt for listen port, user, target port, and target host.
 // TODO: Do we need to check SO_ERROR in the epoll loop, or is this
 //       covered by EPOLLERR?
 //       See http://stackoverflow.com/a/6206705

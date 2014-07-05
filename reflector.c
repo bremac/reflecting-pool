@@ -36,11 +36,11 @@
 //       See http://stackoverflow.com/a/6206705
 // TODO: Pass time to session_allocate and session_insert
 
-double forward_percentage = 100;
-int listen_port = -1;
-const char *target_hostname = NULL;
-const char *target_port = NULL;
-const char *username = NULL;
+static double forward_percentage = 100;
+static int listen_port = -1;
+static const char *target_hostname = NULL;
+static const char *target_port = NULL;
+static const char *username = NULL;
 
 static uint32_t *local_addrs;
 static struct sessiontable *table;

@@ -36,6 +36,7 @@
 //       See http://stackoverflow.com/a/6206705
 // TODO: Pass time to session_allocate and session_insert
 
+double forward_percentage = 100;
 int listen_port = -1;
 const char *target_hostname = NULL;
 const char *target_port = NULL;
@@ -228,7 +229,9 @@ dispatch_packet(uint8_t *buffer, size_t total_len)
             goto err;
         }
 
-        // TODO: statistical discard goes here.
+        /* Forward only a specified percentage of connections. */
+        if ((double)random() * 100 / RAND_MAX > forward_percentage)
+            return;
 
         session = session_allocate(table, source_ip, source_port,
                                    seq_lower + 1);
@@ -322,10 +325,11 @@ usage(const char *command_name, const char *message)
         fprintf(stderr, "%s: %s\n\n", command_name, message);
 
     fprintf(stderr,
-"Usage: %s -l PORT -u USERNAME -h HOST -p PORT\n"
+"Usage: %s -l PORT -u USERNAME -h HOST -p PORT [OPTIONS]\n"
 "\n"
 "Mirror inbound traffic on a specific port to another destination.\n"
 "\n"
+"  -f PERCENT    forward PERCENT of connections received\n"
 "  -l PORT       listen on PORT for incoming traffic\n"
 "  -u USERNAME   run as user USERNAME\n"
 "  -h HOSTNAME   forward traffic to HOSTNAME\n"
@@ -334,40 +338,47 @@ usage(const char *command_name, const char *message)
     exit(1);
 }
 
-int
-parse_port(const char *s)
+double
+parse_positive_number(const char *s, double max)
 {
     char *end;
-    int port;
+    double number;
 
     errno = 0;
-    port = strtod(s, &end);
+    number = strtod(s, &end);
 
-    if (*end || errno == ERANGE || port < 0 || port > 65535)
+    if (*end || errno == ERANGE || number < 0 || number > max)
         return -1;
 
-    return port;
+    return number;
 }
 
 void
 parse_options(int argc, char **argv)
 {
+    double target_port_num;
     int opt;
 
-    while ((opt = getopt(argc, argv, "h:l:p:u:")) > 0) {
+    while ((opt = getopt(argc, argv, "f:h:l:p:u:")) > 0) {
         switch (opt) {
+        case 'f':
+            forward_percentage = parse_positive_number(optarg, 100);
+            if (forward_percentage < 0)
+                usage(argv[0], "PERCENT should be between 0 and 100");
+            break;
         case 'h':
             target_hostname = optarg;
             break;
         case 'l':
-            listen_port = parse_port(optarg);
-            if (listen_port < 0)
-                usage(argv[0], "listen port must be between 0 and 65535");
+            listen_port = parse_positive_number(optarg, 65535);
+            if (listen_port < 0 || (int)listen_port != listen_port)
+                usage(argv[0], "PORT must be between 0 and 65535");
             break;
         case 'p':
-            /* Validate the target port (getaddrinfo needs a string.) */
-            if (parse_port(optarg) < 0)
-                usage(argv[0], "target port must be between 0 and 65535");
+            /* Validate the target port (getaddrinfo takes a string.) */
+            target_port_num = parse_positive_number(optarg, 65535);
+            if (target_port_num < 0 || (int)target_port_num != target_port_num)
+                usage(argv[0], "PORT must be between 0 and 65535");
             target_port = optarg;
             break;
         case 'u':
@@ -401,6 +412,8 @@ initialize(void)
 
     if ((table = sessiontable_create()) == NULL)
         exit(1);
+
+    srandom(time(NULL));
 }
 
 void

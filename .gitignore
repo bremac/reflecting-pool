@@ -1,3 +1,5 @@
+.depend
+*.d
 *.o
 tests
 reflector

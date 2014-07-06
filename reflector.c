@@ -26,6 +26,7 @@
 #include "sessions.h"
 
 
+// TODO: do we need to validate sizeof(iphdr), etc. against length?
 // TODO: dump session state on error
 // TODO: IPv6 support
 // TODO: port + interface BPF filter?

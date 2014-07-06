@@ -49,6 +49,8 @@ load_local_addresses(void)
         }
     }
 
+    freeifaddrs(first);
+
     return addrs;
 }
 

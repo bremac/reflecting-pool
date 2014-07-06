@@ -18,6 +18,8 @@ test_localaddrs(void)
     assert(addrs != NULL);
     assert(is_local_address(addrs, 0x7f000001));  /* localhost */
     assert(!is_local_address(addrs, 0x08080808)); /* Google's DNS. */
+
+    free(addrs);
 }
 
 void
@@ -46,7 +48,7 @@ test_checksums(void)
         0x1e, 0x23
     };
     uint8_t invalid_bytes[] = {
-        0x45, 0x00, 0x01, 0x48, 0xf3, 0x23, 0x40, 0x00, 0x40, 0x06,
+        0x45, 0x00, 0x00, 0x48, 0xf3, 0x23, 0x40, 0x00, 0x40, 0x06,
         0x49, 0x8a, 0x7f, 0x00, 0x00, 0x01, 0x7f, 0x00, 0x00, 0x01,
         0x9c, 0x89, 0x1f, 0x40, 0xa5, 0x6d, 0x9f, 0x1c, 0x79, 0x66,
         0x02, 0xed, 0x80, 0x18, 0x01, 0x56, 0xfe, 0x3c, 0x00, 0x00,
@@ -67,7 +69,7 @@ test_checksums(void)
     ip_header = (struct iphdr *)invalid_bytes;
     tcp_header = (struct tcphdr *)(invalid_bytes + ip_header->ihl * 4);
 
-    assert(!is_ip_checksum_valid(ip_header));
+    assert(is_ip_checksum_valid(ip_header));
     assert(!is_tcp_checksum_valid(ip_header, tcp_header));
 }
 
@@ -92,6 +94,16 @@ test_sessiontable(void)
     assert((s[1] = session_allocate(table, 0x7f000001, 8001, 1)) != NULL);
     s[2] = session_find(table, 0x7f000001, 8001);
     assert(s[1] == s[2]);
+
+    sessiontable_destroy(table);
+}
+
+void
+test_session(void)
+{
+    struct sessiontable *table;
+    struct session *session;
+    struct segment *segment;
 }
 
 int

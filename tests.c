@@ -98,12 +98,87 @@ test_sessiontable(void)
     sessiontable_destroy(table);
 }
 
+static struct segment *
+create_dummy_segment(uint64_t seq, size_t length)
+{
+    struct segment *segment;
+
+    assert((segment = segment_create(length)) != NULL);
+
+    segment->seq = seq;
+    segment->length = length;
+    segment->dataptr = segment->bytes;
+    segment->fin = 0;
+    segment->rst = 0;
+
+    return segment;
+}
+
 void
 test_session(void)
 {
     struct sessiontable *table;
     struct session *session;
-    struct segment *segment;
+    struct segment *segment[10];
+    uint32_t source_ip = 0x7f000001;
+    uint16_t source_port = 9000;
+
+    assert((table = sessiontable_create()) != NULL);
+    assert((session = session_allocate(table, source_ip, source_port,
+                1)) != NULL);
+
+    /* A segment with a sequence number matching the next expected number
+       should be returned by session_peek. */
+    assert((segment[0] = create_dummy_segment(1, 256)) != NULL);
+    assert(session_insert(session, segment[0]) == 0);
+    assert(session_peek(session) == segment[0]);
+    session_pop(session);
+    assert(session_peek(session) == NULL);
+
+    assert(session->next_seq == 257);
+
+    /* A segment with a no content inside of the receive window (ie. seq < rwnd
+       and seq + length <= rwnd) should be dropped instead of inserted. */
+    // XXX: Move window checking logic into session_insert.
+
+    /* A segment with a sequence number that is higher than the next expected
+       number should not be returned until all prior segments are available. */
+    assert((segment[1] = create_dummy_segment(512, 100)) != NULL);
+    assert(session_insert(session, segment[1]) == 0);
+    assert(session_peek(session) == NULL);
+
+    assert((segment[2] = create_dummy_segment(257, 255)) != NULL);
+    assert(session_insert(session, segment[2]) == 0);
+    assert(session_peek(session) == segment[2]);
+    session_pop(session);
+    assert(session_peek(session) == segment[1]);
+    session_pop(session);
+
+    assert(session->next_seq == 612);
+
+    /* A segment that overlaps the receive window should be returned with its
+       data pointer adjusted to point to the next previously-unreceived byte. */
+    assert((segment[3] = create_dummy_segment(556, 128)) != NULL);
+    assert(session_insert(session, segment[3]) == 0);
+    assert(session_peek(session) == segment[3]);
+    assert(segment[3]->dataptr == segment[3]->bytes + 56);
+    session_pop(session);
+
+    assert(session->next_seq == 684);
+
+    /* Duplicate packets should be discarded, instead of returning empty
+       packets. */
+    assert((segment[4] = create_dummy_segment(684, 54)) != NULL);
+    assert(session_insert(session, segment[4]) == 0);
+    assert((segment[5] = create_dummy_segment(684, 54)) != NULL);
+    assert(session_insert(session, segment[5]) == 0);
+    assert(session_peek(session) == segment[4] ||
+           session_peek(session) == segment[5]);
+    session_pop(session);
+    assert(session_peek(session) == NULL);
+
+    session_release(table, session);
+    sessiontable_destroy(table);
 }
 
 int
@@ -113,6 +188,7 @@ main(void)
     test_checksums();
     test_localaddrs();
     test_sessiontable();
+    test_session();
 
     puts("All tests passed");
 

@@ -185,8 +185,8 @@ session_release(struct sessiontable *table, struct session *session)
     if (session->fd >= 0)
         close(session->fd);
 
-    while ((segment = session_peek(session)) != NULL)
-        session_pop(session);
+    while ((segment = segmentq_pop(session->segmentq)) != NULL)
+        segment_destroy(segment);
 
     segmentq_destroy(session->segmentq);
     sessiontable_remove(table, session);
@@ -207,6 +207,13 @@ session_peek(struct session *session)
     struct segment *segment;
     size_t offset;
 
+    /* Remove any segments that fall below the receive window. */
+    while ((segment = segmentq_peek(session->segmentq)) != NULL &&
+           segment->seq + segment->length <= session->next_seq) {
+        segmentq_pop(session->segmentq);
+        segment_destroy(segment);
+    }
+
     if ((segment = segmentq_peek(session->segmentq)) == NULL)
         return NULL;
 
@@ -217,6 +224,7 @@ session_peek(struct session *session)
         offset = session->next_seq - segment->seq;
         segment->seq += offset;
         segment->dataptr += offset;
+        segment->length -= offset;
     }
 
     return segment;

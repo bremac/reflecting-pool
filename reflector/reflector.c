@@ -19,6 +19,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "bpf.h"
 #include "checksum.h"
 #include "definitions.h"
 #include "localaddrs.h"
@@ -36,6 +37,9 @@
 //       covered by EPOLLERR?
 //       See http://stackoverflow.com/a/6206705
 // TODO: Pass time to session_allocate and session_insert
+//
+// TODO: Remove a session from the hash table when we receive a FIN
+//       or RST and have a contiguous set of segments up until FIN / RST.
 
 static double forward_percentage = 100;
 static int listen_port = -1;
@@ -176,66 +180,112 @@ session_write_all(struct session *session)
     }
 }
 
-// TODO: better name
-void
-dispatch_packet(uint8_t *buffer, size_t total_len)
+struct packet_in {
+    size_t data_len;
+    uint8_t *data;
+    uint32_t seq_lower;
+    uint32_t source_ip;
+    uint32_t dest_ip;
+    uint16_t source_port;
+    uint16_t dest_port;
+    uint8_t ack;
+    uint8_t fin;
+    uint8_t rst;
+    uint8_t syn;
+};
+
+int
+read_packet(uint8_t *buffer, size_t total_len, struct packet_in *pkt)
 {
     struct iphdr *ip_header;
     struct tcphdr *tcp_header;
-    struct session *session = NULL;
-    struct segment *segment = NULL;
-    uint64_t seq;
-    size_t header_len, data_len;
-    uint32_t seq_lower;
-    uint32_t source_ip, dest_ip;
-    uint16_t source_port, dest_port;
+    size_t ip_header_len, tcp_header_len, combined_header_len;
 
-    ip_header = (struct iphdr *)buffer;
-    tcp_header = (struct tcphdr *)(buffer + ip_header->ihl * 4);
-
-    source_ip = ntohl(ip_header->saddr);
-    source_port = ntohs(tcp_header->source);
-    dest_ip = ntohl(ip_header->daddr);
-    dest_port = ntohs(tcp_header->dest);
-    seq_lower = ntohl(tcp_header->seq);
-
-    if (tcp_header->rst &&
-        is_local_address(local_addrs, source_ip) &&
-        source_port == listen_port) {
-        session = session_find(table, dest_ip, dest_port);
-        session_release(table, session);
+    if (total_len < sizeof(struct iphdr)) {
+        warnx("packet too small to contain an IP header");
+        return -1;
     }
 
-    if (!is_local_address(local_addrs, dest_ip) ||
-        dest_port != listen_port) {
-        return;
+    ip_header = (struct iphdr *)buffer;
+    ip_header_len = ip_header->ihl * 4;
+
+    if (total_len - ip_header_len < sizeof(struct tcphdr)) {
+        warnx("packet too small to contain a TCP header");
+        return -1;
+    }
+
+    tcp_header = (struct tcphdr *)(buffer + ip_header_len);
+    tcp_header_len = tcp_header->doff * 4;
+
+    pkt->seq_lower = ntohl(tcp_header->seq);
+    pkt->source_ip = ntohl(ip_header->saddr);
+    pkt->source_port = ntohs(tcp_header->source);
+    pkt->dest_ip = ntohl(ip_header->daddr);
+    pkt->dest_port = ntohs(tcp_header->dest);
+
+    pkt->ack = tcp_header->ack;
+    pkt->fin = tcp_header->fin;
+    pkt->rst = tcp_header->rst;
+    pkt->syn = tcp_header->syn;
+
+    combined_header_len = ip_header_len + tcp_header_len;
+    pkt->data_len = ntohs(ip_header->tot_len) - combined_header_len;
+    pkt->data = buffer + combined_header_len;
+
+    if (combined_header_len + pkt->data_len != total_len) {
+        warnx("packet length mismatch: %d + %d bytes vs. %lld",
+              (int)combined_header_len, (int)pkt->data_len,
+              (long long)total_len);
+        return -1;
     }
 
     /* Discard packets from other machines with bad checksums.
      * Don't check packets from the local machine, as these are usually
      * wrong until they hit the NIC due to checksum offloading. */
-    if (!is_local_address(local_addrs, source_ip) &&
-        !are_checksums_valid(ip_header, tcp_header)) {
-        warnx("dropping invalid packet");
+    if (!is_local_address(local_addrs, pkt->source_ip)
+        && !are_checksums_valid(ip_header, tcp_header)) {
+        warnx("packet has an invalid checksum");
+        return -1;
+    }
+
+    return 0;
+}
+
+void
+dispatch_packet(struct packet_in *pkt)
+{
+    struct session *session = NULL;
+    struct segment *segment = NULL;
+    uint64_t seq;
+
+    if (pkt->rst && pkt->source_port == listen_port
+        && is_local_address(local_addrs, pkt->source_ip)) {
+        session = session_find(table, pkt->dest_ip, pkt->dest_port);
+        session_release(table, session);
+    }
+
+    if (!is_local_address(local_addrs, pkt->dest_ip)
+        || pkt->dest_port != listen_port) {
+        warnx("received unwanted packet");
         return;
     }
 
-    session = session_find(table, source_ip, source_port);
+    session = session_find(table, pkt->source_ip, pkt->source_port);
 
     /* New TCP connection is being established */
-    if (tcp_header->syn && !tcp_header->ack) {
+    if (pkt->syn && !pkt->ack) {
         if (session != NULL) {
             warnx("received SYN packet for existing session %04x:%d",
-                        source_ip, source_port);
-            goto err;
+                  pkt->source_ip, pkt->source_port);
+            return;
         }
 
         /* Forward only a specified percentage of connections. */
         if ((double)random() * 100 / RAND_MAX > forward_percentage)
             return;
 
-        session = session_allocate(table, source_ip, source_port,
-                                   seq_lower + 1);
+        session = session_allocate(table, pkt->source_ip, pkt->source_port,
+                                   pkt->seq_lower + 1);
 
         if (session == NULL) {
             warnx("unable to find available session, dropping packet");
@@ -252,41 +302,36 @@ dispatch_packet(uint8_t *buffer, size_t total_len)
         if (session == NULL)    /* not following this session */
             return;
 
-        seq = adjust_seq(seq_lower, session->next_seq);
-        if (seq == SEQ_INVALID)
-            return;
-
-        header_len = ip_header->ihl * 4 + tcp_header->doff * 4;
-        data_len = ntohs(ip_header->tot_len) - header_len;
-
-        if (header_len + data_len != total_len) {
-            warnx("packet length mismatch: %d + %d bytes vs. %lld",
-                        (int)header_len, (int)data_len, (long long)total_len);
+        seq = adjust_seq(pkt->seq_lower, session->next_seq);
+        if (seq == SEQ_INVALID) {
+            //warnx("invalid sequence number for %04x:%d: %04x vs. %llx",
+            //      session->source_ip, session->source_port,
+            //      pkt->seq_lower, (long long)session->next_seq);
             return;
         }
 
-        if (data_len == 0 && !tcp_header->fin && !tcp_header->rst)
+        if (pkt->data_len == 0 && !pkt->fin && !pkt->rst)
             return;
 
-        segment = segment_create(data_len);
+        segment = segment_create(pkt->data_len);
 
         if (segment == NULL) {
             warnx("could not allocate %llu byte segment for %04x:%d",
-                        (long long)data_len, source_ip, source_port);
+                  (long long)pkt->data_len, pkt->source_ip, pkt->source_port);
             goto err;
         }
 
         segment->seq = seq;
-        segment->length = data_len;
-        if (data_len > 0)
-            memcpy(segment->bytes, buffer + header_len, data_len);
+        segment->length = pkt->data_len;
+        if (pkt->data_len > 0)
+            memcpy(segment->bytes, pkt->data, pkt->data_len);
         segment->dataptr = segment->bytes;
-        segment->fin = tcp_header->fin;
-        segment->rst = tcp_header->rst;
+        segment->fin = pkt->fin;
+        segment->rst = pkt->rst;
 
         if (session_insert(session, segment)) {
             warnx("failed to insert segment into segmentq for %04x:%d",
-                        source_ip, source_port);
+                  pkt->source_ip, pkt->source_port);
             goto err;
         }
 
@@ -408,6 +453,8 @@ initialize(void)
     if ((local_addrs = load_local_addresses()) == NULL)
         exit(1);
 
+    bpf_attach(raw_fd, local_addrs, listen_port);
+
     if (make_socket_nonblocking(raw_fd) < 0)
         err(1, "failed to make raw socket non-blocking");
 
@@ -420,6 +467,7 @@ initialize(void)
 void
 run_event_loop(void)
 {
+    struct packet_in pkt;
     struct session *session;
     struct sockaddr _addr;
     socklen_t _addr_len;
@@ -441,10 +489,14 @@ run_event_loop(void)
         err(1, "failed to allocate memory for events");
 
     while (1) {
-        event_count = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
+        //event_count = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
+        event_count = epoll_wait(epoll_fd, events, MAX_EVENTS, 5000);
 
         if (event_count < 0)
             err(1, "epoll_wait");
+
+        if (event_count == 0)
+            sessiontable_dump(table);
 
         for (i = 0; i < event_count; i++) {
             if (events[i].data.fd == raw_fd) {
@@ -459,8 +511,17 @@ run_event_loop(void)
                     if (len < 0)
                         break;
 
+                    if (read_packet(buffer, len, &pkt) < 0)
+                        continue;
+
+                    dispatch_packet(&pkt);
+
                     // TODO: handle epoll registration here
-                    dispatch_packet(buffer, len);
+                    /*session = dispatch_packet(&pkt);
+                    if (pkt->syn && !pkt->ack)
+                        ; // epoll registration
+                    else
+                        session_write_all(session);*/
                 }
             } else {  /* The available socket is not the raw_fd. */
                 if (events[i].events & (EPOLLERR | EPOLLHUP)) {

@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <err.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -116,6 +117,33 @@ sessiontable_remove(struct sessiontable *table, struct session *session)
             *slot = cursor->next;
         }
         slot = &cursor->next;
+    }
+}
+
+void
+sessiontable_dump(struct sessiontable *table)
+{
+    struct session *session;
+    struct segment *segment;
+    size_t i;
+
+    for (i = 0; i < MAX_TCP_SESSIONS; i++) {
+        session = &table->sessions[i];
+
+        if (!session->is_used)
+            continue;
+
+        segment = segmentq_peek(session->segmentq);
+
+        if (segment == NULL)
+            printf("%04x:%d next_seq=%llx, no queued segment\n",
+                   session->source_ip, session->source_port,
+                   (long long)session->next_seq);
+        else
+            printf("%04x:%d next_seq=%llx, queued seq=%llx\n",
+                   session->source_ip, session->source_port,
+                   (long long)session->next_seq,
+                   (long long)segment->seq);
     }
 }
 

@@ -1,5 +1,8 @@
-.depend
+.depend*
 *.d
 *.o
-tests
-reflector
+pool/pool
+reflector/reflector
+tests/tests
+tests/sent
+tests/received

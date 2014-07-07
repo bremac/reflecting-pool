@@ -30,6 +30,7 @@ uint64_t adjust_seq(uint32_t, uint64_t);
 
 struct sessiontable *sessiontable_create(void);
 void sessiontable_destroy(struct sessiontable *);
+void sessiontable_dump(struct sessiontable *);
 
 struct session *session_allocate(struct sessiontable *, uint32_t,
                                  uint16_t, uint32_t);

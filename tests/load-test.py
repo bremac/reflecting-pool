@@ -41,6 +41,7 @@ class NullRequestHandler(CountedRequestHandler):
             received_data = bool(self.request.recv(CHUNK_LEN))
 
         self.increment_and_maybe_shutdown(sigil='-')
+        self.request.shutdown(socket.SHUT_WR)
 
 
 class RecordingRequestHandler(CountedRequestHandler):
@@ -60,6 +61,7 @@ class RecordingRequestHandler(CountedRequestHandler):
                 chunk = self.request.recv(CHUNK_LEN)
 
         self.increment_and_maybe_shutdown(sigil='+')
+        self.request.shutdown(socket.SHUT_WR)
 
 
 class ReusableTcpServer(ThreadingTCPServer):

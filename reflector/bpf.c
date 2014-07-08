@@ -13,14 +13,17 @@ bpf_extend(struct sock_fprog *bpf, size_t *capacity, uint16_t code,
 {
     struct sock_filter *filter;
 
-    if (bpf->len >= *capacity) {
-        if ((bpf->filter = realloc(bpf->filter, *capacity * 2)) == NULL)
-            err(1, "failed to allocate memory for bpf");
+    bpf->len++;
 
+    if (bpf->len >= *capacity) {
         *capacity *= 2;
+        bpf->filter = realloc(bpf->filter,
+                              *capacity * sizeof(struct sock_filter));
+        if (bpf->filter == NULL)
+            err(1, "failed to allocate memory for bpf");
     }
 
-    filter = &bpf->filter[bpf->len++];
+    filter = &bpf->filter[bpf->len - 1];
     filter->code = code;
     filter->jt = jt;
     filter->jf = jf;
@@ -28,6 +31,13 @@ bpf_extend(struct sock_fprog *bpf, size_t *capacity, uint16_t code,
 
     return filter;
 }
+
+static inline uint8_t
+jump_target(struct sock_fprog *bpf, struct sock_filter *from)
+{
+    return &bpf->filter[bpf->len] - from - 1;
+}
+
 
 #define LDBIND    (BPF_LD | BPF_B | BPF_IND)
 #define LDHIND    (BPF_LD | BPF_H | BPF_IND)
@@ -48,7 +58,6 @@ bpf_extend(struct sock_fprog *bpf, size_t *capacity, uint16_t code,
 #define RET_FAIL   0
 #define RET_PASS  -1
 
-#define JUMP_TARGET(bpf, from)  (&bpf.filter[bpf.len] - from)
 
 void
 bpf_attach(int raw_fd, uint32_t *addrs, uint16_t listen_port)
@@ -57,7 +66,7 @@ bpf_attach(int raw_fd, uint32_t *addrs, uint16_t listen_port)
     struct sock_filter *check_port, *check_rst;
     size_t capacity;
     int addr_count, i;
-    uint8_t rst = ntohs(0x20);
+    uint32_t rst = 0x20;
 
     for (addr_count = 0; addrs[addr_count]; addr_count++)
         ;
@@ -65,6 +74,9 @@ bpf_attach(int raw_fd, uint32_t *addrs, uint16_t listen_port)
     capacity = 16;
     bpf.len = 0;
     bpf.filter = calloc(capacity, sizeof(struct sock_filter));
+
+    if (bpf.filter == NULL)
+        err(1, "failed to allocate space for packet filter");
 
     bpf_extend(&bpf, &capacity, LDMSHXB, 0, 0, 0);
     bpf_extend(&bpf, &capacity, LDBIND,  0, 0, FLAGS);
@@ -75,15 +87,16 @@ bpf_attach(int raw_fd, uint32_t *addrs, uint16_t listen_port)
     check_port = bpf_extend(&bpf, &capacity, JEQ, 0, -1, listen_port);
     bpf_extend(&bpf, &capacity, LDWABS, 0, 0, SRC_IP);
 
-    for (i = 0; i < addr_count; i++)
+    for (i = 0; i < addr_count; i++) {
         bpf_extend(&bpf, &capacity, JEQ, addr_count - i, 0, addrs[i]);
+    }
 
-    check_port->jf = JUMP_TARGET(bpf, check_port);
+    check_port->jf = jump_target(&bpf, check_port);
     bpf_extend(&bpf, &capacity, RET, 0, 0, RET_FAIL);
     bpf_extend(&bpf, &capacity, RET, 0, 0, RET_PASS);
 
     /* If !RST, check that it's to the monitored port. */
-    check_rst->jf = JUMP_TARGET(bpf, check_rst);
+    check_rst->jf = jump_target(&bpf, check_rst);
     bpf_extend(&bpf, &capacity, LDHIND, 0, 0, DEST_PORT);
     check_port = bpf_extend(&bpf, &capacity, JEQ, 0, -1, listen_port);
     bpf_extend(&bpf, &capacity, LDWABS, 0, 0, DEST_IP);
@@ -91,7 +104,7 @@ bpf_attach(int raw_fd, uint32_t *addrs, uint16_t listen_port)
     for (i = 0; i < addr_count; i++)
         bpf_extend(&bpf, &capacity, JEQ, addr_count - i, 0, addrs[i]);
 
-    check_port->jf = JUMP_TARGET(bpf, check_port);
+    check_port->jf = jump_target(&bpf, check_port);
     bpf_extend(&bpf, &capacity, RET, 0, 0, RET_FAIL);
     bpf_extend(&bpf, &capacity, RET, 0, 0, RET_PASS);
 

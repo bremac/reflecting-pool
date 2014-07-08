@@ -46,6 +46,7 @@ static int listen_port = -1;
 static const char *target_hostname = NULL;
 static const char *target_port = NULL;
 static const char *username = NULL;
+static size_t raw_buffer_size = 10 * 1024 * 1024;
 
 static uint32_t *local_addrs;
 static struct sessiontable *table;
@@ -264,11 +265,8 @@ dispatch_packet(struct packet_in *pkt)
         session_release(table, session);
     }
 
-    if (!is_local_address(local_addrs, pkt->dest_ip)
-        || pkt->dest_port != listen_port) {
-        warnx("received unwanted packet");
-        return;
-    }
+    assert(is_local_address(local_addrs, pkt->dest_ip) &&
+           pkt->dest_port == listen_port);
 
     session = session_find(table, pkt->source_ip, pkt->source_port);
 
@@ -447,6 +445,10 @@ initialize(void)
 {
     if ((raw_fd = socket(AF_INET, SOCK_RAW, IPPROTO_TCP)) < 0)
         err(1, "failed to create raw_fd socket");
+
+    if (setsockopt(raw_fd, SOL_SOCKET, SO_RCVBUFFORCE,
+                   &raw_buffer_size, sizeof(raw_buffer_size)) < 0)
+        err(1, "failed to set receive buffer size");
 
     drop_privileges(username);
 

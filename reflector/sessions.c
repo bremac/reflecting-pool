@@ -237,6 +237,7 @@ session_peek(struct session *session)
 
     /* Remove any segments that fall below the receive window. */
     while ((segment = segmentq_peek(session->segmentq)) != NULL &&
+           segment->seq < session->next_seq &&
            segment->seq + segment->length <= session->next_seq) {
         segmentq_pop(session->segmentq);
         segment_destroy(segment);

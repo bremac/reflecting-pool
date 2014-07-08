@@ -12,7 +12,8 @@
 
 struct session {
     struct session *next;
-    struct segmentq *segmentq;
+    struct segmentq *receive_window;
+    struct segmentq *send_queue;
     uint64_t next_seq;
     time_t latest_timestamp;
     int fd;
@@ -37,7 +38,7 @@ struct session *session_allocate(struct sessiontable *, uint32_t,
 struct session *session_find(struct sessiontable *, uint32_t, uint16_t);
 void session_release(struct sessiontable *, struct session *);
 
-int session_insert(struct session *, struct segment *);
+int session_insert(struct sessiontable *, struct session *, struct segment *);
 struct segment *session_peek(struct session *);
 void session_pop(struct session *);
 

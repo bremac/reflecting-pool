@@ -133,7 +133,7 @@ sessiontable_dump(struct sessiontable *table)
         if (!session->is_used)
             continue;
 
-        segment = segmentq_peek(session->segmentq);
+        segment = segmentq_peek(session->receive_window);
 
         if (segment == NULL)
             printf("%04x:%d next_seq=%llx, no queued segment\n",
@@ -176,9 +176,10 @@ session_allocate(struct sessiontable *table, uint32_t source_ip,
     if (session->is_used)
         session_release(table, session);
 
-    session->segmentq = segmentq_create(MAX_WINDOW_SEGS);
+    session->receive_window = segmentq_create(MAX_WINDOW_SEGS);
+    session->send_queue = segmentq_create(MAX_WINDOW_SEGS);
 
-    if (session->segmentq == NULL) {
+    if (session->receive_window == NULL || session->send_queue == NULL) {
         warnx("failed to allocate segmentq");
         return NULL;
     }
@@ -213,60 +214,73 @@ session_release(struct sessiontable *table, struct session *session)
     if (session->fd >= 0)
         close(session->fd);
 
-    while ((segment = segmentq_pop(session->segmentq)) != NULL)
+    while ((segment = segmentq_pop(session->receive_window)) != NULL)
         segment_destroy(segment);
 
-    segmentq_destroy(session->segmentq);
+    while ((segment = segmentq_pop(session->send_queue)) != NULL)
+        segment_destroy(segment);
+
+    segmentq_destroy(session->receive_window);
+    segmentq_destroy(session->send_queue);
     sessiontable_remove(table, session);
 
     session->is_used = 0;
 }
 
 int
-session_insert(struct session *session, struct segment *segment)
+session_insert(struct sessiontable *table, struct session *session,
+               struct segment *segment)
 {
+    size_t offset;
+    int ret;
+
     session->latest_timestamp = time(NULL);
-    return segmentq_insert(session->segmentq, segment);
+
+    if ((ret = segmentq_insert(session->receive_window, segment)) != 0)
+        return ret;
+
+    /* Move as many contiguous segments as possible to the send queue. */
+    while ((segment = segmentq_peek(session->receive_window)) != NULL &&
+           segment->seq <= session->next_seq) {
+        if (segment->seq < session->next_seq &&
+            segment->seq + segment->length <= session->next_seq) {
+            segmentq_pop(session->receive_window);
+            segment_destroy(segment);
+            continue;
+        }
+
+        if (segment->seq < session->next_seq) {
+            offset = session->next_seq - segment->seq;
+            segment->seq += offset;
+            segment->dataptr += offset;
+            segment->length -= offset;
+        }
+
+        if ((ret = segmentq_insert(session->send_queue, segment)) != 0)
+            return ret;
+
+        segmentq_pop(session->receive_window);
+        session->next_seq += segment->length;
+
+        /* The client is free to reuse the port as soon as the other end
+           knows that the connection is closed, so remove this session
+           from the lookup table immediately. */
+        if (segment->fin || segment->rst)
+            sessiontable_remove(table, session);
+    }
+
+    return 0;
 }
 
 struct segment *
 session_peek(struct session *session)
 {
-    struct segment *segment;
-    size_t offset;
-
-    /* Remove any segments that fall below the receive window. */
-    while ((segment = segmentq_peek(session->segmentq)) != NULL &&
-           segment->seq < session->next_seq &&
-           segment->seq + segment->length <= session->next_seq) {
-        segmentq_pop(session->segmentq);
-        segment_destroy(segment);
-    }
-
-    if ((segment = segmentq_peek(session->segmentq)) == NULL)
-        return NULL;
-
-    if (segment->seq > session->next_seq)
-        return NULL;
-
-    if (segment->seq < session->next_seq) {
-        offset = session->next_seq - segment->seq;
-        segment->seq += offset;
-        segment->dataptr += offset;
-        segment->length -= offset;
-    }
-
-    return segment;
+    return segmentq_peek(session->send_queue);
 }
 
 void
 session_pop(struct session *session)
 {
-    struct segment *segment = segmentq_pop(session->segmentq);
-
-    if (segment == NULL)
-        return;
-
-    session->next_seq += segment->length;
+    struct segment *segment = segmentq_pop(session->send_queue);
     segment_destroy(segment);
 }

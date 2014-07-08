@@ -328,7 +328,7 @@ dispatch_packet(struct packet_in *pkt)
         segment->fin = pkt->fin;
         segment->rst = pkt->rst;
 
-        if (session_insert(session, segment)) {
+        if (session_insert(table, session, segment)) {
             warnx("failed to insert segment into segmentq for %04x:%d",
                   pkt->source_ip, pkt->source_port);
             goto err;

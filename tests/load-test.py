@@ -1,11 +1,21 @@
 import base64
-import glob
+import hashlib
 import os
 import random
 import socket
 from SocketServer import BaseRequestHandler, ThreadingTCPServer
 import sys
 import threading
+
+
+# To simulate packet loss locally:
+#
+#   sudo tc qdisc add dev lo root netem delay 3ms 10ms 25% loss 5%
+#
+# To remove it when done:
+#
+#   sudo tc qdisc delete dev lo root netem
+#
 
 
 CHUNK_LEN = 8192
@@ -128,13 +138,37 @@ def generate_request_files():
 
 def make_empty_directory(dirname):
     try:
-        for filename in glob.glob("{}/*".format(dirname)):
-            os.remove(filename)
+        for filename in os.listdir(dirname):
+            os.remove(os.path.join(dirname, filename))
         os.rmdir(dirname)
     except:
         pass
 
     os.mkdir(dirname)
+
+
+def hash_directory_contents(dirname):
+    md5sums = []
+
+    for filename in os.listdir(dirname):
+        m = hashlib.md5()
+
+        with open(os.path.join(dirname, filename), 'rb') as f:
+            chunk = f.read(CHUNK_LEN)
+            while chunk:
+                m.update(chunk)
+                chunk = f.read(CHUNK_LEN)
+
+        md5sums.append(m.hexdigest())
+
+    return md5sums
+
+
+def get_transmitted_percent():
+    md5sums_sent = hash_directory_contents(SENT_DIR)
+    md5sums_received = hash_directory_contents(RECEIVED_DIR)
+    differing = len(set(md5sums_sent) - set(md5sums_received))
+    return (1.0 - float(differing) / len(md5sums_sent)) * 100
 
 
 if __name__ == '__main__':
@@ -157,4 +191,5 @@ if __name__ == '__main__':
     for thread in threads:
         thread.join()
 
-    sys.stderr.write('\n')
+    sys.stderr.write('\nMatched %.2f%% of transmitted requests\n\n' %
+                     get_transmitted_percent())

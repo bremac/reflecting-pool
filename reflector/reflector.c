@@ -175,6 +175,7 @@ session_write_all(struct session *session)
 
         if (segment->rst) {
             session_release(table, session);
+            return;
         }
 
         session_pop(session);

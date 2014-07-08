@@ -27,19 +27,13 @@
 #include "sessions.h"
 
 
-// TODO: do we need to validate sizeof(iphdr), etc. against length?
-// TODO: dump session state on error
 // TODO: IPv6 support
-// TODO: port + interface BPF filter?
 // TODO: Naming and abstraction inconsistent in this module.
 // TODO: Limit total queued bytes to MAX_WINDOW_BYTES.
 // TODO: Do we need to check SO_ERROR in the epoll loop, or is this
 //       covered by EPOLLERR?
 //       See http://stackoverflow.com/a/6206705
 // TODO: Pass time to session_allocate and session_insert
-//
-// TODO: Remove a session from the hash table when we receive a FIN
-//       or RST and have a contiguous set of segments up until FIN / RST.
 
 static double forward_percentage = 100;
 static int listen_port = -1;

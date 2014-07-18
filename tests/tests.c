@@ -7,7 +7,6 @@
 
 #include "checksum.h"
 #include "localaddrs.h"
-#include "segments.h"
 #include "sessions.h"
 
 void
@@ -119,7 +118,7 @@ test_session(void)
 {
     struct sessiontable *table;
     struct session *session;
-    struct segment *segment[10];
+    struct segment *segment[12];
     uint32_t source_ip = 0x7f000001;
     uint16_t source_port = 9000;
 
@@ -130,25 +129,21 @@ test_session(void)
     /* A segment with a sequence number matching the next expected number
        should be returned by session_peek. */
     assert((segment[0] = create_dummy_segment(1, 256)) != NULL);
-    assert(session_insert(table, session, segment[0]) == 0);
+    session_insert(table, session, segment[0]);
     assert(session_peek(session) == segment[0]);
     session_pop(session);
     assert(session_peek(session) == NULL);
 
     assert(session->next_seq == 257);
 
-    /* A segment with a no content inside of the receive window (ie. seq < rwnd
-       and seq + length <= rwnd) should be dropped instead of inserted. */
-    // XXX: Move window checking logic into session_insert.
-
     /* A segment with a sequence number that is higher than the next expected
        number should not be returned until all prior segments are available. */
     assert((segment[1] = create_dummy_segment(512, 100)) != NULL);
-    assert(session_insert(table, session, segment[1]) == 0);
+    session_insert(table, session, segment[1]);
     assert(session_peek(session) == NULL);
 
     assert((segment[2] = create_dummy_segment(257, 255)) != NULL);
-    assert(session_insert(table, session, segment[2]) == 0);
+    session_insert(table, session, segment[2]);
     assert(session_peek(session) == segment[2]);
     session_pop(session);
     assert(session_peek(session) == segment[1]);
@@ -159,7 +154,7 @@ test_session(void)
     /* A segment that overlaps the receive window should be returned with its
        data pointer adjusted to point to the next previously-unreceived byte. */
     assert((segment[3] = create_dummy_segment(556, 128)) != NULL);
-    assert(session_insert(table, session, segment[3]) == 0);
+    session_insert(table, session, segment[3]);
     assert(session_peek(session) == segment[3]);
     assert(segment[3]->dataptr == segment[3]->bytes + 56);
     session_pop(session);
@@ -169,11 +164,42 @@ test_session(void)
     /* Duplicate packets should be discarded, instead of returning empty
        packets. */
     assert((segment[4] = create_dummy_segment(684, 54)) != NULL);
-    assert(session_insert(table, session, segment[4]) == 0);
     assert((segment[5] = create_dummy_segment(684, 54)) != NULL);
-    assert(session_insert(table, session, segment[5]) == 0);
+    session_insert(table, session, segment[4]);
+    session_insert(table, session, segment[5]);
     assert(session_peek(session) == segment[4] ||
            session_peek(session) == segment[5]);
+    session_pop(session);
+    assert(session_peek(session) == NULL);
+
+    /* Duplicate packets should be discarded even if they arrive after a
+       missing or corrupted packet. */
+    assert((segment[6] = create_dummy_segment(738, 100)) != NULL);
+    assert((segment[7] = create_dummy_segment(838, 31)) != NULL);
+    assert((segment[8] = create_dummy_segment(838, 31)) != NULL);
+    session_insert(table, session, segment[7]);
+    session_insert(table, session, segment[8]);
+    assert(session_peek(session) == NULL);
+    session_insert(table, session, segment[6]);
+    assert(session_peek(session) == segment[6]);
+    session_pop(session);
+    assert(session_peek(session) == segment[7] ||
+           session_peek(session) == segment[8]);
+    session_pop(session);
+    assert(session_peek(session) == NULL);
+
+    /* A segment with a no content inside of the receive window (ie. seq < rwnd
+       and seq + length <= rwnd) should be dropped instead of inserted. */
+    assert((segment[9] = create_dummy_segment(700, 31)) != NULL);
+    session_insert(table, session, segment[9]);
+    assert(session_peek(session) == NULL);
+
+    /* A segment that falls within another segment should be discarded. */
+    assert((segment[10] = create_dummy_segment(872, 100)) != NULL);
+    assert((segment[11] = create_dummy_segment(869, 120)) != NULL);
+    session_insert(table, session, segment[10]);
+    session_insert(table, session, segment[11]);
+    assert(session_peek(session) == segment[11]);
     session_pop(session);
     assert(session_peek(session) == NULL);
 

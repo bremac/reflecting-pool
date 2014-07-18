@@ -7,7 +7,6 @@ SRCS = \
 	checksum.c \
 	hash.c \
 	localaddrs.c \
-	segments.c \
 	sessions.c \
 	reflector.c \
 

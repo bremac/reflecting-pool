@@ -10,7 +10,7 @@ SRCS = tests.c
 SRCS +=
 
 # reflector
-SRCS += checksum.c hash.c localaddrs.c segments.c sessions.c
+SRCS += checksum.c hash.c localaddrs.c sessions.c
 
 all: ${PROG}
 	@./${PROG}

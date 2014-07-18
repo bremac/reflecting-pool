@@ -8,7 +8,7 @@
 
 #include "definitions.h"
 #include "hash.h"
-#include "segments.h"
+#include "queue.h"
 #include "sessions.h"
 
 
@@ -19,8 +19,8 @@ adjust_seq(uint32_t seq_lower, uint64_t next_seq)
     uint32_t offset;
 
     // TODO: Handle packets that overlap the next expected sequence number?
-    //             Could hypothetically happen with variable path MTU and
-    //             retransmission.
+    //       Could hypothetically happen with variable path MTU and
+    //       retransmission.
     offset = seq_lower - (next_seq & 0xffffffff);
 
     /* If the offset is outside the receive window, discard the segment. */
@@ -133,7 +133,9 @@ sessiontable_dump(struct sessiontable *table)
         if (!session->is_used)
             continue;
 
-        segment = segmentq_peek(session->receive_window);
+        segment = TAILQ_FIRST(&session->send_queue);
+        if (segment == NULL)
+            segment = TAILQ_FIRST(&session->recv_queue);
 
         if (segment == NULL)
             printf("%04x:%d next_seq=%llx, no queued segment\n",
@@ -144,6 +146,34 @@ sessiontable_dump(struct sessiontable *table)
                    session->source_ip, session->source_port,
                    (long long)session->next_seq,
                    (long long)segment->seq);
+    }
+}
+
+struct segment *
+segment_create(size_t data_len)
+{
+    return malloc(sizeof(struct segment) + data_len);
+}
+
+void
+segment_destroy(struct segment *segment)
+{
+    free(segment);
+}
+
+void
+segment_fixup_overlap(struct segment *segment, uint64_t next_seq)
+{
+    size_t offset;
+
+    if (segment == NULL)
+        return;
+
+    if (segment->seq < next_seq) {
+        offset = next_seq - segment->seq;
+        segment->dataptr += offset;
+        segment->seq += offset;
+        segment->length -= offset;
     }
 }
 
@@ -176,13 +206,8 @@ session_allocate(struct sessiontable *table, uint32_t source_ip,
     if (session->is_used)
         session_release(table, session);
 
-    session->receive_window = segmentq_create(MAX_WINDOW_SEGS);
-    session->send_queue = segmentq_create(MAX_WINDOW_SEGS);
-
-    if (session->receive_window == NULL || session->send_queue == NULL) {
-        warnx("failed to allocate segmentq");
-        return NULL;
-    }
+    TAILQ_INIT(&session->recv_queue);
+    TAILQ_INIT(&session->send_queue);
 
     session->next_seq = next_seq;
     session->latest_timestamp = time(NULL);
@@ -214,73 +239,84 @@ session_release(struct sessiontable *table, struct session *session)
     if (session->fd >= 0)
         close(session->fd);
 
-    while ((segment = segmentq_pop(session->receive_window)) != NULL)
+    while ((segment = TAILQ_FIRST(&session->recv_queue)) != NULL) {
+        TAILQ_REMOVE(&session->recv_queue, segment, segments);
         segment_destroy(segment);
+    }
 
-    while ((segment = segmentq_pop(session->send_queue)) != NULL)
+    while ((segment = TAILQ_FIRST(&session->send_queue)) != NULL) {
+        TAILQ_REMOVE(&session->send_queue, segment, segments);
         segment_destroy(segment);
+    }
 
-    segmentq_destroy(session->receive_window);
-    segmentq_destroy(session->send_queue);
     sessiontable_remove(table, session);
-
     session->is_used = 0;
 }
 
-int
+void
 session_insert(struct sessiontable *table, struct session *session,
                struct segment *segment)
 {
-    size_t offset;
-    int ret;
+    struct segment *prev, *cur;
 
-    session->latest_timestamp = time(NULL);
-
-    if ((ret = segmentq_insert(session->receive_window, segment)) != 0)
-        return ret;
-
-    /* Move as many contiguous segments as possible to the send queue. */
-    while ((segment = segmentq_peek(session->receive_window)) != NULL &&
-           segment->seq <= session->next_seq) {
-        if (segment->seq < session->next_seq &&
-            segment->seq + segment->length <= session->next_seq) {
-            segmentq_pop(session->receive_window);
-            segment_destroy(segment);
-            continue;
-        }
-
-        if (segment->seq < session->next_seq) {
-            offset = session->next_seq - segment->seq;
-            segment->seq += offset;
-            segment->dataptr += offset;
-            segment->length -= offset;
-        }
-
-        if ((ret = segmentq_insert(session->send_queue, segment)) != 0)
-            return ret;
-
-        segmentq_pop(session->receive_window);
-        session->next_seq += segment->length;
-
-        /* The client is free to reuse the port as soon as the other end
-           knows that the connection is closed, so remove this session
-           from the lookup table immediately. */
-        if (segment->fin || segment->rst)
-            sessiontable_remove(table, session);
+    if (segment->seq < session->next_seq &&
+        segment->seq + segment->length <= session->next_seq) {
+        segment_destroy(segment);
+        return;
     }
 
-    return 0;
+    session->latest_timestamp = time(NULL);
+    cur = TAILQ_LAST(&session->recv_queue, recv_head);
+
+    while (cur != NULL && cur->seq >= segment->seq) {
+        prev = TAILQ_PREV(cur, recv_head, segments);
+
+        /* Delete any segments contained within this segment. */
+        if (cur->seq + cur->length <= segment->seq + segment->length) {
+            TAILQ_REMOVE(&session->recv_queue, cur, segments);
+            segment_destroy(cur);
+        }
+
+        cur = prev;
+    }
+
+    /* Fix up any overlapping segments. */
+    if (cur != NULL) {
+        segment_fixup_overlap(segment, cur->seq + cur->length);
+        TAILQ_INSERT_AFTER(&session->recv_queue, cur, segment, segments);
+    } else {
+        segment_fixup_overlap(segment, session->next_seq);
+        TAILQ_INSERT_HEAD(&session->recv_queue, segment, segments);
+    }
+
+    segment_fixup_overlap(TAILQ_NEXT(segment, segments),
+                          segment->seq + segment->length);
+
+    /* Move all contiguous segments to the send queue. */
+    while ((cur = TAILQ_FIRST(&session->recv_queue)) != NULL &&
+            cur->seq == session->next_seq) {
+        TAILQ_REMOVE(&session->recv_queue, cur, segments);
+        TAILQ_INSERT_TAIL(&session->send_queue, cur, segments);
+
+        /* The client is can reuse the port once the other end knows the
+           connection is closed; remove the session from the lookup table. */
+        if (cur->fin || cur->rst)
+            sessiontable_remove(table, session);
+
+        session->next_seq += cur->length;
+    }
 }
 
 struct segment *
 session_peek(struct session *session)
 {
-    return segmentq_peek(session->send_queue);
+    return TAILQ_FIRST(&session->send_queue);
 }
 
 void
 session_pop(struct session *session)
 {
-    struct segment *segment = segmentq_pop(session->send_queue);
+    struct segment *segment = TAILQ_FIRST(&session->send_queue);
+    TAILQ_REMOVE(&session->send_queue, segment, segments);
     segment_destroy(segment);
 }

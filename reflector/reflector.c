@@ -22,13 +22,11 @@
 #include "checksum.h"
 #include "definitions.h"
 #include "localaddrs.h"
-#include "segments.h"
 #include "sessions.h"
 
 
 // TODO: IPv6 support
 // TODO: Naming and abstraction inconsistent in this module.
-// TODO: Limit total queued bytes to MAX_WINDOW_BYTES.
 // TODO: Do we need to check SO_ERROR in the epoll loop, or is this
 //       covered by EPOLLERR?
 //       See http://stackoverflow.com/a/6206705
@@ -327,12 +325,7 @@ dispatch_packet(struct packet_in *pkt)
         segment->fin = pkt->fin;
         segment->rst = pkt->rst;
 
-        if (session_insert(table, session, segment)) {
-            warnx("failed to insert segment into segmentq for %04x:%d",
-                  pkt->source_ip, pkt->source_port);
-            goto err;
-        }
-
+        session_insert(table, session, segment);
         session_write_all(session);
     }
 

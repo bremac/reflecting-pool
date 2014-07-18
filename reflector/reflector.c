@@ -54,9 +54,7 @@ make_socket_nonblocking(int fd)
     if (flags < 0)
         return -1;
 
-    flags |= O_NONBLOCK;
-
-    if (fcntl(fd, F_SETFL, flags) < 0)
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
         return -1;
 
     return 0;

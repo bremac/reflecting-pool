@@ -8,7 +8,6 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 
-#include <assert.h>
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -260,8 +259,12 @@ dispatch_packet(struct packet_in *pkt)
         session_release(table, session);
     }
 
-    assert(is_local_address(local_addrs, pkt->dest_ip) &&
-           pkt->dest_port == listen_port);
+    if (!is_local_address(local_addrs, pkt->dest_ip) ||
+        pkt->dest_port != listen_port) {
+        warnx("received unexpected packet for %04x:%d",
+            pkt->dest_ip, pkt->dest_port);
+        return;
+    }
 
     session = session_find(table, pkt->source_ip, pkt->source_port);
 

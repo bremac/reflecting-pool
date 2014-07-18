@@ -298,8 +298,8 @@ session_insert(struct sessiontable *table, struct session *session,
         TAILQ_REMOVE(&session->recv_queue, cur, segments);
         TAILQ_INSERT_TAIL(&session->send_queue, cur, segments);
 
-        /* The client is can reuse the port once the other end knows the
-           connection is closed; remove the session from the lookup table. */
+        /* The client can reuse the port once the other end knows the connection
+           is closed; remove the session from the lookup table. */
         if (cur->fin || cur->rst)
             sessiontable_remove(table, session);
 

@@ -27,7 +27,6 @@
 
 // TODO: IPv6 support
 // TODO: Naming and abstraction inconsistent in this module.
-// TODO: Limit total queued bytes to MAX_WINDOW_BYTES.
 // TODO: Do we need to check SO_ERROR in the epoll loop, or is this
 //       covered by EPOLLERR?
 //       See http://stackoverflow.com/a/6206705

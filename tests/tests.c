@@ -7,7 +7,6 @@
 
 #include "checksum.h"
 #include "localaddrs.h"
-#include "segments.h"
 #include "sessions.h"
 
 void
@@ -130,7 +129,7 @@ test_session(void)
     /* A segment with a sequence number matching the next expected number
        should be returned by session_peek. */
     assert((segment[0] = create_dummy_segment(1, 256)) != NULL);
-    assert(session_insert(table, session, segment[0]) == 0);
+    session_insert(table, session, segment[0]);
     assert(session_peek(session) == segment[0]);
     session_pop(session);
     assert(session_peek(session) == NULL);
@@ -144,11 +143,11 @@ test_session(void)
     /* A segment with a sequence number that is higher than the next expected
        number should not be returned until all prior segments are available. */
     assert((segment[1] = create_dummy_segment(512, 100)) != NULL);
-    assert(session_insert(table, session, segment[1]) == 0);
+    session_insert(table, session, segment[1]);
     assert(session_peek(session) == NULL);
 
     assert((segment[2] = create_dummy_segment(257, 255)) != NULL);
-    assert(session_insert(table, session, segment[2]) == 0);
+    session_insert(table, session, segment[2]);
     assert(session_peek(session) == segment[2]);
     session_pop(session);
     assert(session_peek(session) == segment[1]);
@@ -159,7 +158,7 @@ test_session(void)
     /* A segment that overlaps the receive window should be returned with its
        data pointer adjusted to point to the next previously-unreceived byte. */
     assert((segment[3] = create_dummy_segment(556, 128)) != NULL);
-    assert(session_insert(table, session, segment[3]) == 0);
+    session_insert(table, session, segment[3]);
     assert(session_peek(session) == segment[3]);
     assert(segment[3]->dataptr == segment[3]->bytes + 56);
     session_pop(session);
@@ -169,9 +168,9 @@ test_session(void)
     /* Duplicate packets should be discarded, instead of returning empty
        packets. */
     assert((segment[4] = create_dummy_segment(684, 54)) != NULL);
-    assert(session_insert(table, session, segment[4]) == 0);
+    session_insert(table, session, segment[4]);
     assert((segment[5] = create_dummy_segment(684, 54)) != NULL);
-    assert(session_insert(table, session, segment[5]) == 0);
+    session_insert(table, session, segment[5]);
     assert(session_peek(session) == segment[4] ||
            session_peek(session) == segment[5]);
     session_pop(session);

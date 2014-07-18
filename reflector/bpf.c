@@ -87,9 +87,8 @@ bpf_attach(int raw_fd, uint32_t *addrs, uint16_t listen_port)
     check_port = bpf_extend(&bpf, &capacity, JEQ, 0, -1, listen_port);
     bpf_extend(&bpf, &capacity, LDWABS, 0, 0, SRC_IP);
 
-    for (i = 0; i < addr_count; i++) {
+    for (i = 0; i < addr_count; i++)
         bpf_extend(&bpf, &capacity, JEQ, addr_count - i, 0, addrs[i]);
-    }
 
     check_port->jf = jump_target(&bpf, check_port);
     bpf_extend(&bpf, &capacity, RET, 0, 0, RET_FAIL);

@@ -19,8 +19,8 @@ adjust_seq(uint32_t seq_lower, uint64_t next_seq)
     uint32_t offset;
 
     // TODO: Handle packets that overlap the next expected sequence number?
-    //             Could hypothetically happen with variable path MTU and
-    //             retransmission.
+    //       Could hypothetically happen with variable path MTU and
+    //       retransmission.
     offset = seq_lower - (next_seq & 0xffffffff);
 
     /* If the offset is outside the receive window, discard the segment. */

@@ -3,20 +3,24 @@ import hashlib
 import os
 import random
 import socket
-from SocketServer import BaseRequestHandler, ThreadingTCPServer
+import SocketServer
 import sys
 import threading
+import time
 
 
+#
 # To simulate packet loss locally:
 #
-#   sudo tc qdisc add dev lo root netem delay 3ms 10ms 25% loss 5%
+#   sudo tc qdisc add dev lo root netem delay 1ms 3ms loss 0.5% duplicate 0.5% reorder 0.2% rate 500mbit
 #
 # To remove it when done:
 #
 #   sudo tc qdisc delete dev lo root netem
 #
 
+RECEIVE_WINDOW = 200 * 1024
+MAX_SEGMENT_SIZE = 1518
 
 CHUNK_LEN = 8192
 NUM_REQUESTS = 40
@@ -31,7 +35,7 @@ MIN_REQUEST_LEN = REQUEST_ID_LEN
 MAX_REQUEST_LEN = 10 * 1024 * 1024
 
 
-class CountedRequestHandler(BaseRequestHandler):
+class CountedRequestHandler(SocketServer.BaseRequestHandler):
     lock = threading.Lock()
     num_requests_handled = 0
 
@@ -74,10 +78,15 @@ class RecordingRequestHandler(CountedRequestHandler):
         self.request.shutdown(socket.SHUT_WR)
 
 
-class ReusableTcpServer(ThreadingTCPServer):
+class ReusableTcpServer(SocketServer.TCPServer, SocketServer.ThreadingMixIn):
     address_family = socket.AF_INET
     allow_reuse_address = True
     socket_type = socket.SOCK_STREAM
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.SOL_TCP, socket.TCP_WINDOW_CLAMP,
+                               RECEIVE_WINDOW)
+        SocketServer.TCPServer.server_bind(self)
 
 
 def run_null_server():
@@ -97,7 +106,11 @@ def run_recording_server():
 
 
 def run_client(filename):
+    # Ensure that we don't generate a packet storm as the clients start.
+    time.sleep(random.randint(0, 2))
+
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_TCP, socket.TCP_MAXSEG, MAX_SEGMENT_SIZE)
     s.connect(('127.0.0.1', NULL_PORT))
 
     with open(os.path.join(SENT_DIR, filename), 'rb') as f:

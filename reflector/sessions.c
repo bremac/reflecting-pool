@@ -152,7 +152,7 @@ sessiontable_dump(struct sessiontable *table)
 struct segment *
 segment_create(size_t data_len)
 {
-    return malloc(sizeof(struct segment) + data_len);
+    return malloc(offsetof(struct segment, bytes) + data_len);
 }
 
 void

@@ -31,7 +31,6 @@
 //       covered by EPOLLERR?
 //       See http://stackoverflow.com/a/6206705
 // TODO: Pass time to session_allocate and session_insert
-// TODO: Use offsetof instead of sizeof for tail-allocated structures.
 // TODO: Add tests for failure cases to the test suite.
 
 static double forward_percentage = 100;

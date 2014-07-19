@@ -295,14 +295,6 @@ dispatch_packet(struct packet_in *pkt)
         if (session == NULL)    /* not following this session */
             return;
 
-        seq = adjust_seq(pkt->seq_lower, session->next_seq);
-        if (seq == SEQ_INVALID) {
-            //warnx("invalid sequence number for %04x:%d: %04x vs. %llx",
-            //      session->source_ip, session->source_port,
-            //      pkt->seq_lower, (long long)session->next_seq);
-            return;
-        }
-
         if (pkt->data_len == 0 && !pkt->fin && !pkt->rst)
             return;
 
@@ -314,7 +306,7 @@ dispatch_packet(struct packet_in *pkt)
             goto err;
         }
 
-        segment->seq = seq;
+        segment->seq = adjust_seq(pkt->seq_lower, session->next_seq);
         segment->length = pkt->data_len;
         if (pkt->data_len > 0)
             memcpy(segment->bytes, pkt->data, pkt->data_len);

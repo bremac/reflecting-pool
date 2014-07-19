@@ -9,8 +9,6 @@
 #include "queue.h"
 
 
-#define SEQ_INVALID UINT64_MAX
-
 struct segment {
     TAILQ_ENTRY(segment) segments;
     uint64_t seq;

@@ -15,23 +15,10 @@
 uint64_t
 adjust_seq(uint32_t seq_lower, uint64_t next_seq)
 {
-    uint64_t seq;
-    uint32_t offset;
+    int32_t offset;
 
-    // TODO: Handle packets that overlap the next expected sequence number?
-    //       Could hypothetically happen with variable path MTU and
-    //       retransmission.
     offset = seq_lower - (next_seq & 0xffffffff);
-
-    /* If the offset is outside the receive window, discard the segment. */
-    if (offset >= MAX_WINDOW_BYTES)
-        return SEQ_INVALID;
-
-    seq = seq_lower | (next_seq & 0xffffffff00000000);
-    if (seq < next_seq)
-        seq += 0x100000000;
-
-    return seq;
+    return next_seq + offset;
 }
 
 struct sessiontable *
@@ -258,21 +245,27 @@ session_insert(struct sessiontable *table, struct session *session,
                struct segment *segment)
 {
     struct segment *prev, *cur;
+    int64_t offset;
 
+    /* Discard segments below the window. For FIN or RST we may have
+       segment->length == 0, so both checks are required. */
     if (segment->seq < session->next_seq &&
-        segment->seq + segment->length <= session->next_seq) {
-        segment_destroy(segment);
-        return;
-    }
+        segment->seq + segment->length <= session->next_seq)
+        goto fail;
 
-    session->latest_timestamp = time(NULL);
+    offset = segment->seq - session->next_seq;
+
+    if (offset > MAX_WINDOW_BYTES)
+        goto fail;
+
     cur = TAILQ_LAST(&session->recv_queue, recv_head);
 
     while (cur != NULL && cur->seq >= segment->seq) {
         prev = TAILQ_PREV(cur, recv_head, segments);
 
         /* Delete any segments contained within this segment. */
-        if (cur->seq + cur->length <= segment->seq + segment->length) {
+        if (cur->seq < segment->seq + segment->length &&
+            cur->seq + cur->length <= segment->seq + segment->length) {
             TAILQ_REMOVE(&session->recv_queue, cur, segments);
             segment_destroy(cur);
         }
@@ -305,6 +298,12 @@ session_insert(struct sessiontable *table, struct session *session,
 
         session->next_seq += cur->length;
     }
+
+    session->latest_timestamp = time(NULL);
+    return;
+
+fail:
+    segment_destroy(segment);
 }
 
 struct segment *

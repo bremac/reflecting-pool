@@ -35,6 +35,7 @@
 // TODO: Move dispatch_packet to sessions module after removing I/O calls.
 //       This will let us to test dispatch and decoding logic.
 // TODO: Explantory module comments for each module, plus key functions.
+// TODO: Add ability to write to a log file.
 
 static double forward_percentage = 100;
 static int listen_port = -1;
@@ -357,6 +358,7 @@ usage(const char *command_name, const char *message)
 "\n"
 "Mirror inbound traffic on a specific port to another destination.\n"
 "\n"
+"  -d            daemonize after starting\n"
 "  -f PERCENT    forward PERCENT of connections received\n"
 "  -l PORT       listen on PORT for incoming traffic\n"
 "  -u USERNAME   run as user USERNAME\n"
@@ -387,8 +389,12 @@ parse_options(int argc, char **argv)
     double target_port_num;
     int opt;
 
-    while ((opt = getopt(argc, argv, "f:h:l:p:u:")) > 0) {
+    while ((opt = getopt(argc, argv, "df:h:l:p:u:")) > 0) {
         switch (opt) {
+        case 'd':
+            if (daemon(0, 0) < 0)
+                err(1, "failed to daemonize");
+            break;
         case 'f':
             forward_percentage = parse_positive_number(optarg, 100);
             if (forward_percentage < 0)

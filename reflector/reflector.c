@@ -248,7 +248,6 @@ dispatch_packet(struct packet_in *pkt)
 {
     struct session *session = NULL;
     struct segment *segment = NULL;
-    uint64_t seq;
 
     if (pkt->rst && pkt->source_port == listen_port
         && is_local_address(local_addrs, pkt->source_ip)) {

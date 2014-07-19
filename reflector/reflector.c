@@ -32,6 +32,9 @@
 //       See http://stackoverflow.com/a/6206705
 // TODO: Pass time to session_allocate and session_insert
 // TODO: Add tests for failure cases to the test suite.
+// TODO: Move dispatch_packet to sessions module after removing I/O calls.
+//       This will let us to test dispatch and decoding logic.
+// TODO: Explantory module comments for each module, plus key functions.
 
 static double forward_percentage = 100;
 static int listen_port = -1;

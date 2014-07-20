@@ -1,3 +1,3 @@
-SUBDIR = reflector tests
+SUBDIR = libev reflector tests
 
 .include <subdir.mk>

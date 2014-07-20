@@ -1,6 +1,9 @@
 .depend*
+*.a
 *.d
 *.o
+*.po
+*.so
 pool/pool
 reflector/reflector
 tests/tests

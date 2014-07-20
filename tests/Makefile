@@ -1,9 +1,6 @@
 PROG = tests
 CFLAGS = -g -Wall -Wextra -fno-strict-aliasing
 
-POOL_SRC = ${.CURDIR}/../pool
-REFLECTOR_SRC = ${.CURDIR}/../reflector
-
 SRCS = tests.c
 
 # pool

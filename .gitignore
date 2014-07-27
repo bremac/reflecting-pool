@@ -5,6 +5,7 @@
 *.po
 *.so
 pool/pool
+poold.conf.py
 reflector/reflector
 tests/tests
 tests/sent

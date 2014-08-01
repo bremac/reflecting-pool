@@ -134,7 +134,7 @@ read_and_discard_all(int fd, uint8_t *buffer, size_t size)
 
     do {
         ret = read(fd, buffer, size);
-    } while (ret >= 0);
+    } while (ret > 0);
 }
 
 void

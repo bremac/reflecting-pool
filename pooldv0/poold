@@ -11,7 +11,6 @@ import tornado.httpserver
 import tornado.ioloop
 import tornado.web
 
-
 # XXX: Timeouts?
 
 class UpstreamConnection(object):
@@ -32,7 +31,7 @@ class UpstreamConnection(object):
         with self._lock:
             return self._completed and not self._queue
 
-    def _write_queued_data(self):
+    def _write_queued_data(self, fut):
         if self._is_completed:
             self._completed_fut.set_result(None)
             return
@@ -44,7 +43,7 @@ class UpstreamConnection(object):
 
     def data_received(self, data):
         with self._lock:
-            self._queue.extend(data)
+            self._queue.append(data)
 
         self._writer_ready_fut.add_done_callback(self._write_queued_data)
 
@@ -57,14 +56,27 @@ def noop(*args, **kwargs):
     return None
 
 
+def register_response_handler(url, fut):
+    def display_http_response(fut):
+        try:
+            r = fut.result()
+        except tornado.httpclient.HTTPError as e:
+            r = e.response
+        print '{}: {}'.format(url, r.code)
+    fut.add_done_callback(display_http_response)
+
+
 @tornado.web.stream_request_body
 class PoolingHandler(tornado.web.RequestHandler):
     BODY_BEARING_METHODS = set(['PATCH', 'POST', 'PUT'])
 
     def initialize(self, get_upstreams=None, **kwargs):
         self.get_upstreams = get_upstreams
+        self._connections = None
 
     def handle_request(self):
+        print 'Received request for {}'.format(self.request.path)
+
         self._connections = []
         upstreams = self.get_upstreams(self.request)
 
@@ -91,13 +103,15 @@ class PoolingHandler(tornado.web.RequestHandler):
                 streaming_callback=noop,
                 validate_cert=True,
             )
-
             client = tornado.httpclient.AsyncHTTPClient()
-            client.fetch(upstream_request)
+            fut = client.fetch(upstream_request)
+            register_response_handler(url, fut)
 
         self.write("OK")
 
     def data_received(self, data):
+        if self._connections is None:
+            self.handle_request()
         for connection in self._connections:
             connection.data_received(data)
 
@@ -109,9 +123,12 @@ class PoolingHandler(tornado.web.RequestHandler):
     get = handle_request
     head = handle_request
     options = handle_request
-    patch = handle_request
-    post = handle_request
-    put = handle_request
+
+    # PATCH, POST, and PUT are received via data_received, but we still
+    # need the methods defined to keep tornado from complaining
+    patch = noop
+    post = noop
+    put = noop
 
 
 def usage():

@@ -7,6 +7,7 @@
 #include <stdlib.h>
 
 #include "localaddrs.h"
+#include "util.h"
 
 
 static int
@@ -24,7 +25,7 @@ load_local_addresses(void)
     uint32_t *addrs;
 
     if (getifaddrs(&first)) {
-        warn("failed to get interface addresses");
+        log_error("failed to get interface addresses");
         return NULL;
     }
 
@@ -37,7 +38,7 @@ load_local_addresses(void)
     addrs = calloc(i + 1, sizeof(uint32_t));
 
     if (addrs == NULL) {
-        warnx("failed to allocate space for interface addresses");
+        log_msg("failed to allocate space for interface addresses");
         return NULL;
     }
 

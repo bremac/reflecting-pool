@@ -10,6 +10,7 @@
 #include "hash.h"
 #include "queue.h"
 #include "sessions.h"
+#include "util.h"
 
 
 uint64_t
@@ -29,7 +30,7 @@ sessiontable_create(void)
     table = calloc(1, sizeof(struct sessiontable));
 
     if (table == NULL) {
-        warnx("failed to allocate table");
+        log_msg("failed to allocate table");
         return NULL;
     }
 
@@ -184,7 +185,7 @@ session_allocate(struct sessiontable *table, uint32_t source_ip,
     }
 
     if (i >= ARRAYSIZE(table->sessions)) {
-        warnx("no available session found");
+        log_msg("no available session found");
         return NULL;
     }
 
@@ -247,16 +248,24 @@ session_insert(struct sessiontable *table, struct session *session,
     struct segment *prev, *cur;
     int64_t offset;
 
+    offset = segment->seq - session->next_seq;
+
     /* Discard segments below the window. For FIN or RST we may have
        segment->length == 0, so both checks are required. */
     if (segment->seq < session->next_seq &&
-        segment->seq + segment->length <= session->next_seq)
+        segment->seq + segment->length <= session->next_seq) {
+        offset = -offset - segment->length;
+        if (offset > MAX_WINDOW_BYTES)
+            log_msg("dropped segment %lld bytes below next expected seq",
+                    (long long)offset);
         goto fail;
+    }
 
-    offset = segment->seq - session->next_seq;
-
-    if (offset > MAX_WINDOW_BYTES)
+    if (offset > MAX_WINDOW_BYTES) {
+        log_msg("dropped segment %lld bytes above next expected seq",
+                (long long)offset);
         goto fail;
+    }
 
     cur = TAILQ_LAST(&session->recv_queue, recv_head);
 

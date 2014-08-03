@@ -1,0 +1,11 @@
+daemonize		false
+username		nobody
+log-filename		reflectd.log
+
+listen-port		9000
+forward-host		localhost
+forward-port		9001
+#forward-percentage	100
+
+max-connections		200
+window-size-kbytes	4096

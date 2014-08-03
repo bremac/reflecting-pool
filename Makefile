@@ -1,8 +1,10 @@
-SUBDIR = libev reflector tests
+SUBDIR = libutil reflector tests
 
-POOL_SRC = ${.CURDIR}/pool
+LIBUTIL = ${.CURDIR}/libutil/libutil.a
+POOLD_SRC = ${.CURDIR}/poold
 REFLECTOR_SRC = ${.CURDIR}/reflector
 
-.export POOL_SRC REFLECTOR_SRC
+.export LIBUTIL
+.export POOLD_SRC REFLECTOR_SRC
 
 .include <subdir.mk>

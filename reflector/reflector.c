@@ -23,6 +23,7 @@
 #include "definitions.h"
 #include "localaddrs.h"
 #include "sessions.h"
+#include "util.h"
 
 
 // TODO: IPv6 support
@@ -37,12 +38,17 @@
 // TODO: Explantory module comments for each module, plus key functions.
 // TODO: Add ability to write to a log file.
 
-static double forward_percentage = 100;
+static int is_daemon = 0;
 static int listen_port = -1;
-static const char *target_hostname = NULL;
-static const char *target_port = NULL;
-static const char *username = NULL;
+static const char *forward_host = NULL;
+static const char *forward_port = NULL;
+static const char *log_filename = NULL;
+static const char *username = "_reflectd";
 static size_t raw_buffer_size = 10 * 1024 * 1024;
+
+static double forward_percentage = 100;
+static unsigned int max_connections = 200;
+static size_t window_size_bytes = 300 * 1024;
 
 static uint32_t *local_addrs;
 static struct sessiontable *table;
@@ -76,28 +82,29 @@ create_reflector_socket(void)
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = 0;
     hints.ai_protocol = IPPROTO_TCP;
-    error = getaddrinfo(target_hostname, target_port, &hints, &result);
+    error = getaddrinfo(forward_host, forward_port, &hints, &result);
 
     if (error != 0) {
-        warnx("connecting to target failed: %s", gai_strerror(error));
+        log_msg("connecting to target failed: %s", gai_strerror(error));
         goto err;
     }
 
     if ((fd = socket(result->ai_family, result->ai_socktype,
                      result->ai_protocol)) < 0) {
-        warn("failed to create socket for %s:%s", target_hostname, target_port);
+        log_error("failed to create socket for %s:%s",
+                  forward_host, forward_port);
         goto err;
     }
 
     if (make_socket_nonblocking(fd) < 0) {
-        warn("failed to make socket non-blocking for %s:%s",
-             target_hostname, target_port);
+        log_error("failed to make socket non-blocking for %s:%s",
+                  forward_host, forward_port);
         goto err;
     }
 
     if (connect(fd, result->ai_addr, result->ai_addrlen) < 0 &&
         errno != EINPROGRESS) {
-        warn("failed to connect to %s:%s", target_hostname, target_port);
+        log_error("failed to connect to %s:%s", forward_host, forward_port);
         goto err;
     }
 
@@ -120,7 +127,7 @@ epoll_register_session(struct session *session)
     event.events = EPOLLIN | EPOLLOUT | EPOLLET;
 
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, session->fd, &event) < 0) {
-        warn("failed to register session");
+        log_error("failed to register session");
         return -1;
     }
 
@@ -149,7 +156,7 @@ session_write_all(struct session *session)
 
             if (count < 0) {
                 if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                    warn("failed to write to connection");
+                    log_error("failed to write to connection");
                     session_release(table, session);
                 }
 
@@ -198,7 +205,7 @@ read_packet(uint8_t *buffer, size_t total_len, struct packet_in *pkt)
     size_t ip_header_len, tcp_header_len, combined_header_len;
 
     if (total_len < sizeof(struct iphdr)) {
-        warnx("packet too small to contain an IP header");
+        log_msg("packet too small to contain an IP header");
         return -1;
     }
 
@@ -206,7 +213,7 @@ read_packet(uint8_t *buffer, size_t total_len, struct packet_in *pkt)
     ip_header_len = ip_header->ihl * 4;
 
     if (total_len - ip_header_len < sizeof(struct tcphdr)) {
-        warnx("packet too small to contain a TCP header");
+        log_msg("packet too small to contain a TCP header");
         return -1;
     }
 
@@ -229,9 +236,9 @@ read_packet(uint8_t *buffer, size_t total_len, struct packet_in *pkt)
     pkt->data = buffer + combined_header_len;
 
     if (combined_header_len + pkt->data_len != total_len) {
-        warnx("packet length mismatch: %d + %d bytes vs. %lld",
-              (int)combined_header_len, (int)pkt->data_len,
-              (long long)total_len);
+        log_msg("packet length mismatch: %d + %d bytes vs. %lld",
+                (int)combined_header_len, (int)pkt->data_len,
+                (long long)total_len);
         return -1;
     }
 
@@ -240,7 +247,7 @@ read_packet(uint8_t *buffer, size_t total_len, struct packet_in *pkt)
      * wrong until they hit the NIC due to checksum offloading. */
     if (!is_local_address(local_addrs, pkt->source_ip)
         && !are_checksums_valid(ip_header, tcp_header)) {
-        warnx("packet has an invalid checksum");
+        log_msg("packet has an invalid checksum");
         return -1;
     }
 
@@ -261,8 +268,7 @@ dispatch_packet(struct packet_in *pkt)
 
     if (!is_local_address(local_addrs, pkt->dest_ip) ||
         pkt->dest_port != listen_port) {
-        warnx("received unexpected packet for %04x:%d",
-            pkt->dest_ip, pkt->dest_port);
+        log_msg("received unexpected packet");
         return;
     }
 
@@ -271,8 +277,7 @@ dispatch_packet(struct packet_in *pkt)
     /* New TCP connection is being established */
     if (pkt->syn && !pkt->ack) {
         if (session != NULL) {
-            warnx("received SYN packet for existing session %04x:%d",
-                  pkt->source_ip, pkt->source_port);
+            log_msg("received SYN packet for existing session");
             return;
         }
 
@@ -284,7 +289,7 @@ dispatch_packet(struct packet_in *pkt)
                                    pkt->seq_lower + 1);
 
         if (session == NULL) {
-            warnx("unable to find available session, dropping packet");
+            log_msg("unable to find available session, dropping packet");
             goto err;
         }
 
@@ -304,8 +309,8 @@ dispatch_packet(struct packet_in *pkt)
         segment = segment_create(pkt->data_len);
 
         if (segment == NULL) {
-            warnx("could not allocate %llu byte segment for %04x:%d",
-                  (long long)pkt->data_len, pkt->source_ip, pkt->source_port);
+            log_msg("could not allocate %llu byte segment",
+                    (long long)pkt->data_len);
             goto err;
         }
 
@@ -333,6 +338,7 @@ void
 drop_privileges(const char *username)
 {
     struct passwd *passwd;
+    struct group *group;
 
     if ((passwd = getpwnam(username)) == NULL)
         err(1, "no user found with name %s", username);
@@ -345,87 +351,13 @@ drop_privileges(const char *username)
 
     if (setresuid(passwd->pw_uid, passwd->pw_uid, passwd->pw_uid) < 0)
         err(1, "failed to drop user privileges");
-}
 
-void
-usage(const char *command_name, const char *message)
-{
-    if (message != NULL)
-        fprintf(stderr, "%s: %s\n\n", command_name, message);
-
-    fprintf(stderr,
-"Usage: %s -l PORT -u USERNAME -h HOST -p PORT [OPTIONS]\n"
-"\n"
-"Mirror inbound traffic on a specific port to another destination.\n"
-"\n"
-"  -d            daemonize after starting\n"
-"  -f PERCENT    forward PERCENT of connections received\n"
-"  -l PORT       listen on PORT for incoming traffic\n"
-"  -u USERNAME   run as user USERNAME\n"
-"  -h HOSTNAME   forward traffic to HOSTNAME\n"
-"  -p PORT       forward traffic to PORT on HOSTNAME\n", command_name);
-
-    exit(1);
-}
-
-double
-parse_positive_number(const char *s, double max)
-{
-    char *end;
-    double number;
-
-    errno = 0;
-    number = strtod(s, &end);
-
-    if (*end || errno == ERANGE || number < 0 || number > max)
-        return -1;
-
-    return number;
-}
-
-void
-parse_options(int argc, char **argv)
-{
-    double target_port_num;
-    int opt;
-
-    while ((opt = getopt(argc, argv, "df:h:l:p:u:")) > 0) {
-        switch (opt) {
-        case 'd':
-            if (daemon(0, 0) < 0)
-                err(1, "failed to daemonize");
-            break;
-        case 'f':
-            forward_percentage = parse_positive_number(optarg, 100);
-            if (forward_percentage < 0)
-                usage(argv[0], "PERCENT should be between 0 and 100");
-            break;
-        case 'h':
-            target_hostname = optarg;
-            break;
-        case 'l':
-            listen_port = parse_positive_number(optarg, 65535);
-            if (listen_port < 0 || (int)listen_port != listen_port)
-                usage(argv[0], "PORT must be between 0 and 65535");
-            break;
-        case 'p':
-            /* Validate the target port (getaddrinfo takes a string.) */
-            target_port_num = parse_positive_number(optarg, 65535);
-            if (target_port_num < 0 || (int)target_port_num != target_port_num)
-                usage(argv[0], "PORT must be between 0 and 65535");
-            target_port = optarg;
-            break;
-        case 'u':
-            username = optarg;
-            break;
-        default:
-            usage(argv[0], NULL);
-        }
-    }
-
-    if (listen_port < 0 || username == NULL ||
-        target_hostname == NULL || target_port == NULL)
-        usage(argv[0], NULL);
+    /* Report the new user and group. If somehow an error occurs, ignore it and
+       just report the GID instead of the group name. */
+    if ((group = getgrgid(passwd->pw_gid)) != NULL)
+        log_msg("became user %s in group %s", passwd->pw_name, group->gr_name);
+    else
+        log_msg("became user %s in group %d", passwd->pw_name, passwd->pw_gid);
 }
 
 #define MAX_EVENTS (MAX_TCP_SESSIONS + 1)
@@ -433,12 +365,28 @@ parse_options(int argc, char **argv)
 void
 initialize(void)
 {
+    FILE *fp;
+
+    if (log_filename == NULL || !strcmp(log_filename, ""))
+        log_init(stderr);
+    else {
+        if ((fp = fopen(log_filename, "a")) == NULL)
+            err(1, "failed to open log file %s", log_filename);
+        setlinebuf(fp);
+        log_init(fp);
+    }
+
     if ((raw_fd = socket(AF_INET, SOCK_RAW, IPPROTO_TCP)) < 0)
         err(1, "failed to create raw_fd socket");
 
     if (setsockopt(raw_fd, SOL_SOCKET, SO_RCVBUFFORCE,
                    &raw_buffer_size, sizeof(raw_buffer_size)) < 0)
         err(1, "failed to set receive buffer size");
+
+    if (is_daemon) {
+        daemon(0, 0);
+        pidfile("reflectd");
+    }
 
     drop_privileges(username);
 
@@ -453,25 +401,75 @@ initialize(void)
     if ((table = sessiontable_create()) == NULL)
         exit(1);
 
+    log_msg("forwarding packets from 0.0.0.0:%d to %s:%s",
+            listen_port, forward_host, forward_port);
+
     srandom(time(NULL));
+}
+
+static void
+raw_fd_ready(int events)
+{
+    struct packet_in pkt;
+    struct sockaddr _addr;
+    socklen_t _addr_len;
+    ssize_t len;
+    uint8_t buffer[IP_MAXPACKET];
+
+    if (events & (EPOLLERR | EPOLLHUP))
+        err(1, "i/o error on raw socket");
+
+    while (1) {
+        len = recvfrom(raw_fd, buffer, sizeof(buffer), 0, &_addr, &_addr_len);
+
+        if (len < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK)
+                log_error("error reading from raw socket");
+            return;
+        }
+
+        if (read_packet(buffer, len, &pkt) < 0)
+            continue;
+
+        log_set_conn(pkt.source_ip, pkt.source_port);
+        dispatch_packet(&pkt);
+        log_clear_conn();
+
+        // TODO: handle epoll registration here
+        /*session = dispatch_packet(&pkt);
+          if (pkt->syn && !pkt->ack)
+              ; // epoll registration
+          else
+              session_write_all(session);*/
+    }
+}
+
+static void
+client_fd_ready(int events, struct session *session)
+{
+    uint8_t buffer[IP_MAXPACKET];
+
+    if (events & (EPOLLERR | EPOLLHUP)) {
+        session_release(table, session);
+        return;
+    }
+
+    if (events & EPOLLIN)
+        read_and_discard_all(session->fd, buffer, sizeof(buffer));
+    if (events & EPOLLOUT)
+        session_write_all(session);
 }
 
 void
 run_event_loop(void)
 {
-    struct packet_in pkt;
-    struct session *session;
-    struct sockaddr _addr;
-    socklen_t _addr_len;
     struct epoll_event event, *events;
-    ssize_t len;
     int i, event_count;
-    uint8_t buffer[IP_MAXPACKET];
 
     if ((epoll_fd = epoll_create1(0)) < 0)
         err(1, "epoll_create1");
 
-    event.data.fd = raw_fd;
+    event.data.ptr = &raw_fd;
     event.events = EPOLLIN | EPOLLET;
 
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, raw_fd, &event) < 0)
@@ -481,59 +479,107 @@ run_event_loop(void)
         err(1, "failed to allocate memory for events");
 
     while (1) {
-        //event_count = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
-        event_count = epoll_wait(epoll_fd, events, MAX_EVENTS, 5000);
+        event_count = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
 
         if (event_count < 0)
             err(1, "epoll_wait");
 
-        if (event_count == 0)
-            sessiontable_dump(table);
-
         for (i = 0; i < event_count; i++) {
-            if (events[i].data.fd == raw_fd) {
-                if (events[i].events & (EPOLLERR | EPOLLHUP))
-                    err(1, "i/o error on raw socket");
-
-                while (1) {
-                    len = recvfrom(raw_fd, buffer, sizeof(buffer), 0,
-                                   &_addr, &_addr_len);
-                    if (len < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
-                        warn("error reading from raw socket");
-                    if (len < 0)
-                        break;
-
-                    if (read_packet(buffer, len, &pkt) < 0)
-                        continue;
-
-                    dispatch_packet(&pkt);
-
-                    // TODO: handle epoll registration here
-                    /*session = dispatch_packet(&pkt);
-                    if (pkt->syn && !pkt->ack)
-                        ; // epoll registration
-                    else
-                        session_write_all(session);*/
-                }
-            } else {  /* The available socket is not the raw_fd. */
-                if (events[i].events & (EPOLLERR | EPOLLHUP)) {
-                    session_release(table, events[i].data.ptr);
-                } else if (events[i].events & EPOLLIN) {
-                    session = events[i].data.ptr;
-                    read_and_discard_all(session->fd, buffer, sizeof(buffer));
-                } else if (events[i].events & EPOLLOUT) {
-                    session = events[i].data.ptr;
-                    session_write_all(session);
-                }
-            }
+            if (events[i].data.ptr == &raw_fd)
+                raw_fd_ready(events[i].events);
+            else
+                client_fd_ready(events[i].events, events[i].data.ptr);
         }
     }
+}
+
+void
+parse_config(const char *filename)
+{
+    FILE *fp;
+    char *key, *value;
+    const char *error_msg;
+    int lineno = 0;
+    int ret;
+
+    if ((fp = fopen(filename, "r")) == NULL)
+        err(1, "failed to read %s", filename);
+
+    while ((ret = config_read(fp, &key, &value, &lineno)) > 0) {
+        if (!strcmp(key, "daemonize")) {
+            is_daemon = !strcmp(value, "true");
+        } else if (!strcmp(key, "username")) {
+            username = value;
+        } else if (!strcmp(key, "log-filename")) {
+            log_filename = value;
+        } else if (!strcmp(key, "listen-port")) {
+            listen_port = strtonum(value, 1, 65535, &error_msg);
+            if (error_msg != NULL)
+                errx(1, "%s, line %d: listen-port is %s",
+                     filename, lineno, error_msg);
+            free(value);
+        } else if (!strcmp(key, "forward-host")) {
+            forward_host = value;
+        } else if (!strcmp(key, "forward-port")) {
+            strtonum(value, 1, 65535, &error_msg);
+            if (error_msg != NULL)
+                errx(1, "%s, line %d: forward-port is %s",
+                     filename, lineno, error_msg);
+            forward_port = value;
+        } else if (!strcmp(key, "forward-percentage")) {
+            forward_percentage = strtonum(value, 1, 100, &error_msg);
+            if (error_msg != NULL)
+                errx(1, "%s, line %d: forward-percentage is %s",
+                     filename, lineno, error_msg);
+            free(value);
+        } else if (!strcmp(key, "max-connections")) {
+            max_connections = strtonum(value, 1, 10000, &error_msg);
+            if (error_msg != NULL)
+                errx(1, "%s, line %d: max-connections is %s",
+                     filename, lineno, error_msg);
+            free(value);
+        } else if (!strcmp(key, "window-size-kbytes")) {
+            window_size_bytes = strtonum(value, 1, 10000, &error_msg) * 1024;
+            if (error_msg != NULL)
+                errx(1, "%s, line %d: window-size-kbytes is %s",
+                     filename, lineno, error_msg);
+            free(value);
+        } else {
+            errx(1, "unknown configuration setting: %s", key);
+        }
+
+        free(key);
+    }
+
+    if (ret < 0)
+        err(1, "failed to read %s", filename);
+
+    fclose(fp);
+
+    if (listen_port < 0)
+        errx(1, "configuration error: listen-port was not specified");
+    if (forward_host == NULL)
+        errx(1, "configuration error: forward-host was not specified");
+    if (forward_port == NULL)
+        errx(1, "configuration error: forward-port was not specified");
 }
 
 int
 main(int argc, char **argv)
 {
-    parse_options(argc, argv);
+    if (argc > 2 || (argc == 2 && !strcmp(argv[0], "-h"))) {
+        fprintf(stderr,
+"Usage: %s <CONFIG>\n"
+"\n"
+"Mirror inbound traffic on a specific port to another destination.\n"
+""
+"  CONFIG  path to the reflectd configuration file. Defaults to\n"
+"          /etc/reflectd.conf if not specified. See reflectd(8).\n", argv[0]);
+
+         exit(1);
+    }
+
+    parse_config(argc == 2 ? argv[1] : "/etc/reflectd.conf");
     initialize();
     run_event_loop();
     return EXIT_SUCCESS;

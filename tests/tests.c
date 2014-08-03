@@ -2,12 +2,14 @@
 #include <netinet/tcp.h>
 
 #include <assert.h>
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "checksum.h"
 #include "localaddrs.h"
 #include "sessions.h"
+#include "util.h"
 
 void
 test_localaddrs(void)
@@ -71,6 +73,89 @@ test_checksums(void)
 
     assert(is_ip_checksum_valid(ip_header));
     assert(!is_tcp_checksum_valid(ip_header, tcp_header));
+}
+
+void
+test_config(void)
+{
+    FILE *fp;
+    char *key, *value;
+    int lineno;
+    char input1[] =
+        "\n"
+        "# this comment is ignored\n"
+        " # indented comments are ignored too\n"
+        "a-key value\n"
+        "  keys can be indented\n"
+        "\n"
+        "spaces   are stripped from value \n"
+        "#comments can be interleaved \n"
+        "with\tkeys and values\n"
+        "values-are-strictly-optional\n"
+        " \teven-with-extra-whitespace    \n";
+    char input2[] =
+        "some#keys might contain #";
+
+    assert((fp = fmemopen(input1, sizeof(input1), "r")) != NULL);
+    lineno = 0;
+
+    assert(config_read(fp, &key, &value, &lineno) > 0);
+    assert(lineno == 4);
+    assert(!strcmp(key, "a-key"));
+    assert(!strcmp(value, "value"));
+    free(key);
+    free(value);
+
+    assert(config_read(fp, &key, &value, &lineno) > 0);
+    assert(lineno == 5);
+    assert(!strcmp(key, "keys"));
+    assert(!strcmp(value, "can be indented"));
+    free(key);
+    free(value);
+
+    assert(config_read(fp, &key, &value, &lineno) > 0);
+    assert(lineno == 7);
+    assert(!strcmp(key, "spaces"));
+    assert(!strcmp(value, "are stripped from value"));
+    free(key);
+    free(value);
+
+    assert(config_read(fp, &key, &value, &lineno) > 0);
+    assert(lineno == 9);
+    assert(!strcmp(key, "with"));
+    assert(!strcmp(value, "keys and values"));
+    free(key);
+    free(value);
+
+    assert(config_read(fp, &key, &value, &lineno) > 0);
+    assert(lineno == 10);
+    assert(!strcmp(key, "values-are-strictly-optional"));
+    assert(!strcmp(value, ""));
+    free(key);
+    free(value);
+
+    assert(config_read(fp, &key, &value, &lineno) > 0);
+    assert(lineno == 11);
+    assert(!strcmp(key, "even-with-extra-whitespace"));
+    assert(!strcmp(value, ""));
+    free(key);
+    free(value);
+
+    assert(config_read(fp, &key, &value, &lineno) == 0);
+    assert(fclose(fp) == 0);
+
+    assert((fp = fmemopen(input2, sizeof(input2), "r")) != NULL);
+    lineno = 0;
+
+    assert(config_read(fp, &key, &value, &lineno) > 0);
+    assert(lineno == 1);
+    assert(!strcmp(key, "some#keys"));
+    assert(!strcmp(value, "might contain #"));
+    free(key);
+    free(value);
+
+    assert(config_read(fp, &key, &value, &lineno) == 0);
+    assert(fclose(fp) == 0);
 }
 
 void
@@ -231,6 +316,7 @@ main(void)
 {
     test_adjust_seq();
     test_checksums();
+    test_config();
     test_localaddrs();
     test_sessiontable();
     test_session();

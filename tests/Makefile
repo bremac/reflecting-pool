@@ -15,8 +15,8 @@ all: ${PROG}
 
 realinstall: ${PROG}
 
-.PATH: ${POOLD_SRC} ${REFLECTOR_SRC}
-CFLAGS += -I${POOLD_SRC} -I${REFLECTOR_SRC}
+.PATH: ${POOLD_SRC} ${REFLECTD_SRC}
+CFLAGS += -I${POOLD_SRC} -I${REFLECTD_SRC}
 
 .include <dpadd.mk>
 .include <prog.mk>

@@ -6,7 +6,7 @@
 *.so
 pool/pool
 poold.conf.py
-reflector/reflector
+reflectd/reflectd
 tests/tests
 tests/sent
 tests/received

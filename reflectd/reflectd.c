@@ -11,8 +11,6 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <grp.h>
-#include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,7 +55,7 @@ static int epoll_fd;
 
 
 static int
-make_socket_nonblocking(int fd)
+unblock(int fd)
 {
     int flags = fcntl(fd, F_GETFL, 0);
 
@@ -96,7 +94,7 @@ create_reflector_socket(void)
         goto err;
     }
 
-    if (make_socket_nonblocking(fd) < 0) {
+    if (unblock(fd) < 0) {
         log_error("failed to make socket non-blocking for %s:%s",
                   forward_host, forward_port);
         goto err;
@@ -333,33 +331,6 @@ err:
     session_release(table, session);
 }
 
-
-void
-drop_privileges(const char *username)
-{
-    struct passwd *passwd;
-    struct group *group;
-
-    if ((passwd = getpwnam(username)) == NULL)
-        err(1, "no user found with name %s", username);
-
-    if (setresgid(passwd->pw_gid, passwd->pw_gid, passwd->pw_gid) < 0)
-        err(1, "failed to drop group privileges");
-
-    if (setgroups(0, NULL) < 0)
-        err(1, "failed to drop supplementary group privileges");
-
-    if (setresuid(passwd->pw_uid, passwd->pw_uid, passwd->pw_uid) < 0)
-        err(1, "failed to drop user privileges");
-
-    /* Report the new user and group. If somehow an error occurs, ignore it and
-       just report the GID instead of the group name. */
-    if ((group = getgrgid(passwd->pw_gid)) != NULL)
-        log_msg("became user %s in group %s", passwd->pw_name, group->gr_name);
-    else
-        log_msg("became user %s in group %d", passwd->pw_name, passwd->pw_gid);
-}
-
 #define MAX_EVENTS (MAX_TCP_SESSIONS + 1)
 
 void
@@ -388,14 +359,14 @@ initialize(void)
         pidfile("reflectd");
     }
 
-    drop_privileges(username);
+    setuser(username);
 
     if ((local_addrs = load_local_addresses()) == NULL)
         exit(1);
 
     bpf_attach(raw_fd, local_addrs, listen_port);
 
-    if (make_socket_nonblocking(raw_fd) < 0)
+    if (unblock(raw_fd) < 0)
         err(1, "failed to make raw socket non-blocking");
 
     if ((table = sessiontable_create()) == NULL)
@@ -509,46 +480,43 @@ parse_config(const char *filename)
         if (!strcmp(key, "daemonize")) {
             is_daemon = !strcmp(value, "true");
         } else if (!strcmp(key, "username")) {
-            username = value;
+            username = strdup(value);
         } else if (!strcmp(key, "log-filename")) {
-            log_filename = value;
+            log_filename = strdup(value);
         } else if (!strcmp(key, "listen-port")) {
             listen_port = strtonum(value, 1, 65535, &error_msg);
             if (error_msg != NULL)
                 errx(1, "%s, line %d: listen-port is %s",
                      filename, lineno, error_msg);
-            free(value);
         } else if (!strcmp(key, "forward-host")) {
-            forward_host = value;
+            forward_host = strdup(value);
         } else if (!strcmp(key, "forward-port")) {
             strtonum(value, 1, 65535, &error_msg);
             if (error_msg != NULL)
                 errx(1, "%s, line %d: forward-port is %s",
                      filename, lineno, error_msg);
-            forward_port = value;
+            forward_port = strdup(value);
         } else if (!strcmp(key, "forward-percentage")) {
             forward_percentage = strtonum(value, 1, 100, &error_msg);
             if (error_msg != NULL)
                 errx(1, "%s, line %d: forward-percentage is %s",
                      filename, lineno, error_msg);
-            free(value);
         } else if (!strcmp(key, "max-connections")) {
             max_connections = strtonum(value, 1, 10000, &error_msg);
             if (error_msg != NULL)
                 errx(1, "%s, line %d: max-connections is %s",
                      filename, lineno, error_msg);
-            free(value);
         } else if (!strcmp(key, "window-size-kbytes")) {
             window_size_bytes = strtonum(value, 1, 10000, &error_msg) * 1024;
             if (error_msg != NULL)
                 errx(1, "%s, line %d: window-size-kbytes is %s",
                      filename, lineno, error_msg);
-            free(value);
         } else {
             errx(1, "unknown configuration setting: %s", key);
         }
 
         free(key);
+        free(value);
     }
 
     if (ret < 0)

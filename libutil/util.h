@@ -16,6 +16,8 @@ void log_msg(const char *format, ...)
 
 int pidfile(const char *);
 
+void setuser(const char *);
+
 long long strtonum(const char *, long long, long long, const char **);
 
 #endif /* _UTIL_H_ */

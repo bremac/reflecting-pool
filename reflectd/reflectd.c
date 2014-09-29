@@ -405,13 +405,6 @@ raw_fd_ready(int events)
         log_set_conn(pkt.source_ip, pkt.source_port);
         dispatch_packet(&pkt);
         log_clear_conn();
-
-        // TODO: handle epoll registration here
-        /*session = dispatch_packet(&pkt);
-          if (pkt->syn && !pkt->ack)
-              ; // epoll registration
-          else
-              session_write_all(session);*/
     }
 }
 

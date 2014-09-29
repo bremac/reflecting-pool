@@ -57,9 +57,9 @@ static int epoll_fd;
 static int
 unblock(int fd)
 {
-    int flags = fcntl(fd, F_GETFL, 0);
+    int flags;
 
-    if (flags < 0)
+    if ((flags = fcntl(fd, F_GETFL, 0)) < 0)
         return -1;
 
     if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)

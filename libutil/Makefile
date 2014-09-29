@@ -1,8 +1,8 @@
 LIB = util
 CFLAGS = -Wall -Wextra -g -fno-strict-aliasing
 
-MKPIC = no
-MKPROFILE = no
+MK_PIC = no
+MK_PROFILE = no
 
 SRCS = config.c hash.c log.c pidfile.c setuser.c strtonum.c
 

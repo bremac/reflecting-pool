@@ -6,7 +6,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "definitions.h"
 #include "hash.h"
 #include "queue.h"
 #include "sessions.h"
@@ -22,35 +21,35 @@ adjust_seq(uint32_t seq_lower, uint64_t next_seq)
     return next_seq + offset;
 }
 
-struct sessiontable *
-sessiontable_create(void)
+struct context *
+context_init(struct context *ctx, size_t max_connections)
 {
-    struct sessiontable *table;
+    ctx->lookup = calloc(max_connections, sizeof(*ctx->lookup));
+    ctx->sessions = calloc(max_connections, sizeof(*ctx->sessions));
 
-    table = calloc(1, sizeof(struct sessiontable));
-
-    if (table == NULL) {
-        log_msg("failed to allocate table");
+    if (ctx->lookup == NULL || ctx->sessions == NULL) {
+        free(ctx->lookup);
+        free(ctx->sessions);
         return NULL;
-    }
-
-    return table;
+    } else
+        return ctx;
 }
 
 void
-sessiontable_destroy(struct sessiontable *table)
+context_teardown(struct context *ctx)
 {
     size_t i;
 
-    for (i = 0; i < ARRAYSIZE(table->sessions); i++) {
-        session_release(table, &table->sessions[i]);
+    for (i = 0; i < ctx->max_connections; i++) {
+        session_release(ctx, &ctx->sessions[i]);
     }
 
-    free(table);
+    free(ctx->lookup);
+    free(ctx->sessions);
 }
 
 static inline uint32_t
-sessiontable_hash(uint32_t source_ip, uint16_t source_port)
+context_hash_session(uint32_t source_ip, uint16_t source_port)
 {
     uint8_t key[sizeof(source_ip) + sizeof(source_port)];
 
@@ -60,14 +59,14 @@ sessiontable_hash(uint32_t source_ip, uint16_t source_port)
 }
 
 static struct session *
-sessiontable_find(struct sessiontable *table, uint32_t source_ip,
-                  uint16_t source_port)
+context_find_session(struct context *ctx, uint32_t source_ip,
+                     uint16_t source_port)
 {
     struct session *session;
     uint32_t idx;
 
-    idx = sessiontable_hash(source_ip, source_port) % ARRAYSIZE(table->lookup);
-    session = table->lookup[idx];
+    idx = context_hash_session(source_ip, source_port) % ctx->max_connections;
+    session = ctx->lookup[idx];
 
     for (; session != NULL; session = session->next) {
         if (session->source_ip == source_ip &&
@@ -78,28 +77,28 @@ sessiontable_find(struct sessiontable *table, uint32_t source_ip,
     return NULL;
 }
 
-void
-sessiontable_insert(struct sessiontable *table, struct session *session)
+static void
+context_add_session(struct context *ctx, struct session *session)
 {
     uint32_t idx;
 
-    idx = (sessiontable_hash(session->source_ip, session->source_port) %
-           ARRAYSIZE(table->lookup));
-    session->next = table->lookup[idx];
-    table->lookup[idx] = session;
+    idx = (context_hash_session(session->source_ip, session->source_port) %
+           ctx->max_connections);
+    session->next = ctx->lookup[idx];
+    ctx->lookup[idx] = session;
 }
 
-void
-sessiontable_remove(struct sessiontable *table, struct session *session)
+static void
+context_remove_session(struct context *ctx, struct session *session)
 {
     struct session *cursor, **slot;
     uint32_t idx;
 
-    idx = (sessiontable_hash(session->source_ip, session->source_port) %
-           ARRAYSIZE(table->lookup));
-    slot = &table->lookup[idx];
+    idx = (context_hash_session(session->source_ip, session->source_port) %
+           ctx->max_connections);
+    slot = &ctx->lookup[idx];
 
-    for (cursor = table->lookup[idx]; cursor != NULL; cursor = cursor->next) {
+    for (cursor = ctx->lookup[idx]; cursor != NULL; cursor = cursor->next) {
         if (cursor->source_ip == session->source_ip &&
             cursor->source_port == session->source_port) {
             *slot = cursor->next;
@@ -109,14 +108,14 @@ sessiontable_remove(struct sessiontable *table, struct session *session)
 }
 
 void
-sessiontable_dump(struct sessiontable *table)
+context_dump(struct context *ctx)
 {
     struct session *session;
     struct segment *segment;
     size_t i;
 
-    for (i = 0; i < MAX_TCP_SESSIONS; i++) {
-        session = &table->sessions[i];
+    for (i = 0; i < ctx->max_connections; i++) {
+        session = &ctx->sessions[i];
 
         if (!session->is_used)
             continue;
@@ -149,7 +148,7 @@ segment_destroy(struct segment *segment)
     free(segment);
 }
 
-void
+static void
 segment_fixup_overlap(struct segment *segment, uint64_t next_seq)
 {
     size_t offset;
@@ -165,34 +164,28 @@ segment_fixup_overlap(struct segment *segment, uint64_t next_seq)
     }
 }
 
-static inline int
-session_is_dead(struct session *session)
-{
-    return session->latest_timestamp + MAX_TCP_SESSIONS < time(NULL);
-}
-
 struct session *
-session_allocate(struct sessiontable *table, uint32_t source_ip,
+session_allocate(struct context *ctx, uint32_t source_ip,
                  uint16_t source_port, uint32_t next_seq)
 {
     struct session *session;
     size_t i;
+    time_t now = time(NULL);
 
-    for (i = 0; i < ARRAYSIZE(table->sessions); i++) {
-        if (!table->sessions[i].is_used ||
-            session_is_dead(&table->sessions[i]))
+    for (i = 0; i < ctx->max_connections; i++) {
+        session = &ctx->sessions[i];
+        if (!session->is_used ||
+            session->latest_timestamp + ctx->timeout_seconds < now)
             break;
     }
 
-    if (i >= ARRAYSIZE(table->sessions)) {
+    if (i >= ctx->max_connections) {
         log_msg("no available session found");
         return NULL;
     }
 
-    session = &table->sessions[i];
-
     if (session->is_used)
-        session_release(table, session);
+        session_release(ctx, session);
 
     TAILQ_INIT(&session->recv_queue);
     TAILQ_INIT(&session->send_queue);
@@ -204,20 +197,20 @@ session_allocate(struct sessiontable *table, uint32_t source_ip,
     session->fd = -1;
     session->is_used = 1;
 
-    sessiontable_insert(table, session);
+    context_add_session(ctx, session);
 
     return session;
 }
 
 struct session *
-session_find(struct sessiontable *table, uint32_t source_ip,
+session_find(struct context *ctx, uint32_t source_ip,
              uint16_t source_port)
 {
-    return sessiontable_find(table, source_ip, source_port);
+    return context_find_session(ctx, source_ip, source_port);
 }
 
 void
-session_release(struct sessiontable *table, struct session *session)
+session_release(struct context *ctx, struct session *session)
 {
     struct segment *segment;
 
@@ -237,12 +230,12 @@ session_release(struct sessiontable *table, struct session *session)
         segment_destroy(segment);
     }
 
-    sessiontable_remove(table, session);
+    context_remove_session(ctx, session);
     session->is_used = 0;
 }
 
 void
-session_insert(struct sessiontable *table, struct session *session,
+session_insert(struct context *ctx, struct session *session,
                struct segment *segment)
 {
     struct segment *prev, *cur;
@@ -255,13 +248,13 @@ session_insert(struct sessiontable *table, struct session *session,
     if (segment->seq < session->next_seq &&
         segment->seq + segment->length <= session->next_seq) {
         offset = -offset - segment->length;
-        if (offset > MAX_WINDOW_BYTES)
+        if (offset > ctx->window_size_bytes)
             log_msg("dropped segment %lld bytes below next expected seq",
                     (long long)offset);
         goto fail;
     }
 
-    if (offset > MAX_WINDOW_BYTES) {
+    if (offset > ctx->window_size_bytes) {
         log_msg("dropped segment %lld bytes above next expected seq",
                 (long long)offset);
         goto fail;
@@ -301,9 +294,9 @@ session_insert(struct sessiontable *table, struct session *session,
         TAILQ_INSERT_TAIL(&session->send_queue, cur, segments);
 
         /* The client can reuse the port once the other end knows the connection
-           is closed; remove the session from the lookup table. */
+           is closed; remove the session from the lookup ctx. */
         if (cur->fin || cur->rst)
-            sessiontable_remove(table, session);
+            context_remove_session(ctx, session);
 
         session->next_seq += cur->length;
     }

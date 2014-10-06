@@ -11,6 +11,9 @@
 #include "sessions.h"
 #include "util.h"
 
+static uint32_t LISTEN_IPS[] = { 0x7f000001, 0x00 };
+
+
 void
 test_localaddrs(void)
 {
@@ -159,28 +162,42 @@ test_config(void)
 }
 
 void
-test_sessiontable(void)
+setup_context(struct context *ctx)
 {
-    struct sessiontable *table;
+    memset(ctx, 0, sizeof(&ctx));
+    ctx->listen_ips = LISTEN_IPS;
+    ctx->listen_port = 9001;
+    ctx->forward_percentage = 100;
+    ctx->max_connections = 200;
+    ctx->window_size_bytes = 256000;
+    ctx->timeout_seconds = 30;
+    assert(context_init(ctx, ctx->max_connections) != NULL);
+}
+
+void
+test_context(void)
+{
+    struct context ctx;
     struct session *s[10];
 
-    assert((table = sessiontable_create()) != NULL);
-    assert((s[0] = session_allocate(table, 0x7f000001, 8000, 1)) != NULL);
-    s[1] = session_find(table, 0x7f000001, 8000);
+    setup_context(&ctx);
+
+    assert((s[0] = session_allocate(&ctx, 0x7f000001, 8000, 1)) != NULL);
+    s[1] = session_find(&ctx, 0x7f000001, 8000);
     assert(s[0] == s[1]);
 
-    assert((s[1] = session_allocate(table, 0x7f000001, 8001, 1)) != NULL);
-    s[2] = session_find(table, 0x7f000001, 8001);
+    assert((s[1] = session_allocate(&ctx, 0x7f000001, 8001, 1)) != NULL);
+    s[2] = session_find(&ctx, 0x7f000001, 8001);
     assert(s[1] == s[2]);
 
-    session_release(table, s[1]);
-    assert(session_find(table, 0x7f000001, 8001) == NULL);
+    session_release(&ctx, s[1]);
+    assert(session_find(&ctx, 0x7f000001, 8001) == NULL);
 
-    assert((s[1] = session_allocate(table, 0x7f000001, 8001, 1)) != NULL);
-    s[2] = session_find(table, 0x7f000001, 8001);
+    assert((s[1] = session_allocate(&ctx, 0x7f000001, 8001, 1)) != NULL);
+    s[2] = session_find(&ctx, 0x7f000001, 8001);
     assert(s[1] == s[2]);
 
-    sessiontable_destroy(table);
+    context_teardown(&ctx);
 }
 
 static struct segment *
@@ -202,20 +219,20 @@ create_dummy_segment(uint64_t seq, size_t length)
 void
 test_session(void)
 {
-    struct sessiontable *table;
+    struct context ctx;
     struct session *session;
     struct segment *segment[3];
     uint32_t source_ip = 0x7f000001;
     uint16_t source_port = 9000;
 
-    assert((table = sessiontable_create()) != NULL);
-    assert((session = session_allocate(table, source_ip, source_port,
-                1)) != NULL);
+    setup_context(&ctx);
+    session = session_allocate(&ctx, source_ip, source_port, 1);
+    assert(session != NULL);
 
     /* A segment with a sequence number matching the next expected number
        should be returned by session_peek. */
     assert((segment[0] = create_dummy_segment(1, 256)) != NULL);
-    session_insert(table, session, segment[0]);
+    session_insert(&ctx, session, segment[0]);
     assert(session_peek(session) == segment[0]);
     session_pop(session);
     assert(session_peek(session) == NULL);
@@ -225,11 +242,11 @@ test_session(void)
     /* A segment with a sequence number that is higher than the next expected
        number should not be returned until all prior segments are available. */
     assert((segment[0] = create_dummy_segment(512, 100)) != NULL);
-    session_insert(table, session, segment[0]);
+    session_insert(&ctx, session, segment[0]);
     assert(session_peek(session) == NULL);
 
     assert((segment[1] = create_dummy_segment(257, 255)) != NULL);
-    session_insert(table, session, segment[1]);
+    session_insert(&ctx, session, segment[1]);
     assert(session_peek(session) == segment[1]);
     session_pop(session);
     assert(session_peek(session) == segment[0]);
@@ -240,7 +257,7 @@ test_session(void)
     /* A segment that overlaps the receive window should be returned with its
        data pointer adjusted to point to the next previously-unreceived byte. */
     assert((segment[0] = create_dummy_segment(556, 128)) != NULL);
-    session_insert(table, session, segment[0]);
+    session_insert(&ctx, session, segment[0]);
     assert(session_peek(session) == segment[0]);
     assert(segment[0]->dataptr == segment[0]->bytes + 56);
     session_pop(session);
@@ -251,8 +268,8 @@ test_session(void)
        packets. */
     assert((segment[0] = create_dummy_segment(684, 54)) != NULL);
     assert((segment[1] = create_dummy_segment(684, 54)) != NULL);
-    session_insert(table, session, segment[0]);
-    session_insert(table, session, segment[1]);
+    session_insert(&ctx, session, segment[0]);
+    session_insert(&ctx, session, segment[1]);
     assert(session_peek(session) == segment[0] ||
            session_peek(session) == segment[1]);
     session_pop(session);
@@ -263,10 +280,10 @@ test_session(void)
     assert((segment[0] = create_dummy_segment(738, 100)) != NULL);
     assert((segment[1] = create_dummy_segment(838, 31)) != NULL);
     assert((segment[2] = create_dummy_segment(838, 31)) != NULL);
-    session_insert(table, session, segment[1]);
-    session_insert(table, session, segment[2]);
+    session_insert(&ctx, session, segment[1]);
+    session_insert(&ctx, session, segment[2]);
     assert(session_peek(session) == NULL);
-    session_insert(table, session, segment[0]);
+    session_insert(&ctx, session, segment[0]);
     assert(session_peek(session) == segment[0]);
     session_pop(session);
     assert(session_peek(session) == segment[1] ||
@@ -277,38 +294,38 @@ test_session(void)
     /* A segment with a no content inside of the receive window (ie. seq < rwnd
        and seq + length <= rwnd) should be dropped instead of inserted. */
     assert((segment[0] = create_dummy_segment(700, 31)) != NULL);
-    session_insert(table, session, segment[0]);
+    session_insert(&ctx, session, segment[0]);
     assert(session_peek(session) == NULL);
 
-    assert((segment[0] = create_dummy_segment(700 + 2 * MAX_WINDOW_BYTES,
+    assert((segment[0] = create_dummy_segment(700 + 2 * ctx.window_size_bytes,
                 31)) != NULL);
-    session_insert(table, session, segment[0]);
+    session_insert(&ctx, session, segment[0]);
     assert(session_peek(session) == NULL);
 
     /* A segment that falls within another segment should be discarded. */
     assert((segment[0] = create_dummy_segment(872, 100)) != NULL);
     assert((segment[1] = create_dummy_segment(869, 120)) != NULL);
-    session_insert(table, session, segment[0]);
-    session_insert(table, session, segment[1]);
+    session_insert(&ctx, session, segment[0]);
+    session_insert(&ctx, session, segment[1]);
     assert(session_peek(session) == segment[1]);
     session_pop(session);
     assert(session_peek(session) == NULL);
 
-    /* A session should be removed from the session table when a FIN or
+    /* A session should be removed from the session context when a FIN or
        RST becomes sendable (ie. there is an unbroken series of segments
        preceding it.) */
     assert((segment[0] = create_dummy_segment(989, 3)) != NULL);
     assert((segment[1] = create_dummy_segment(992, 0)) != NULL);
     segment[1]->fin = 1;
-    session_insert(table, session, segment[1]);
-    assert(session_find(table, source_ip, source_port) == session);
-    session_insert(table, session, segment[0]);
-    assert(session_find(table, source_ip, source_port) == NULL);
+    session_insert(&ctx, session, segment[1]);
+    assert(session_find(&ctx, source_ip, source_port) == session);
+    session_insert(&ctx, session, segment[0]);
+    assert(session_find(&ctx, source_ip, source_port) == NULL);
     session_pop(session);
     session_pop(session);
 
-    session_release(table, session);
-    sessiontable_destroy(table);
+    session_release(&ctx, session);
+    context_teardown(&ctx);
 }
 
 int
@@ -318,7 +335,7 @@ main(void)
     test_checksums();
     test_config();
     test_localaddrs();
-    test_sessiontable();
+    test_context();
     test_session();
 
     puts("All tests passed");

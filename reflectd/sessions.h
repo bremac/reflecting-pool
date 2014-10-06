@@ -5,7 +5,6 @@
 #include <stdint.h>
 #include <time.h>
 
-#include "definitions.h"
 #include "queue.h"
 
 
@@ -31,9 +30,20 @@ struct session {
     uint8_t is_used;
 };
 
-struct sessiontable {
-    struct session *lookup[MAX_TCP_SESSIONS];
-    struct session sessions[MAX_TCP_SESSIONS];
+struct context {
+    uint32_t *listen_ips;
+    int listen_port;
+
+    const char *forward_host;
+    const char *forward_port;
+    double forward_percentage;
+
+    struct session **lookup;
+    struct session *sessions;
+
+    unsigned int max_connections;
+    ssize_t window_size_bytes;
+    unsigned int timeout_seconds;
 };
 
 uint64_t adjust_seq(uint32_t, uint64_t);
@@ -41,16 +51,16 @@ uint64_t adjust_seq(uint32_t, uint64_t);
 struct segment *segment_create(size_t);
 void segment_destroy(struct segment *);
 
-struct sessiontable *sessiontable_create(void);
-void sessiontable_destroy(struct sessiontable *);
-void sessiontable_dump(struct sessiontable *);
+struct context *context_init(struct context *, size_t);
+void context_teardown(struct context *);
+void context_dump(struct context *);
 
-struct session *session_allocate(struct sessiontable *, uint32_t,
+struct session *session_allocate(struct context *, uint32_t,
                                  uint16_t, uint32_t);
-struct session *session_find(struct sessiontable *, uint32_t, uint16_t);
-void session_release(struct sessiontable *, struct session *);
+struct session *session_find(struct context *, uint32_t, uint16_t);
+void session_release(struct context *, struct session *);
 
-void session_insert(struct sessiontable *, struct session *, struct segment *);
+void session_insert(struct context *, struct session *, struct segment *);
 struct segment *session_peek(struct session *);
 void session_pop(struct session *);
 

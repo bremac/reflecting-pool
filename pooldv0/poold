@@ -60,9 +60,10 @@ def register_response_handler(url, fut):
     def display_http_response(fut):
         try:
             r = fut.result()
+            print '{}: {}'.format(url, r.code)
         except tornado.httpclient.HTTPError as e:
-            r = e.response
-        print '{}: {}'.format(url, r.code)
+            print '{}: {}'.format(url, e)
+
     fut.add_done_callback(display_http_response)
 
 

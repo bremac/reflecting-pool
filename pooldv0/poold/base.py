@@ -1,17 +1,15 @@
-#!/usr/bin/env python
-
 from collections import deque
-import os
-import sys
+import logging
 import threading
 
 import tornado.concurrent
 import tornado.httpclient
 import tornado.httpserver
-import tornado.ioloop
 import tornado.web
 
-# XXX: Timeouts?
+
+logger = logging.getLogger(__name__)
+
 
 class UpstreamConnection(object):
     def __init__(self):
@@ -60,9 +58,12 @@ def register_response_handler(url, fut):
     def display_http_response(fut):
         try:
             r = fut.result()
+            summary = r.code
         except tornado.httpclient.HTTPError as e:
-            r = e.response
-        print '{}: {}'.format(url, r.code)
+            summary = str(e)
+
+        logger.info("%s: %s", url, summary)
+
     fut.add_done_callback(display_http_response)
 
 
@@ -75,7 +76,7 @@ class PoolingHandler(tornado.web.RequestHandler):
         self._connections = None
 
     def handle_request(self):
-        print 'Received request for {}'.format(self.request.path)
+        logger.info('Received request for %s', self.request.path)
 
         self._connections = []
         upstreams = self.get_upstreams(self.request)
@@ -129,54 +130,3 @@ class PoolingHandler(tornado.web.RequestHandler):
     patch = noop
     post = noop
     put = noop
-
-
-def usage():
-    print 'Usage: poold.py [FILENAME]'
-    print
-    print 'Run poold with the settings from the python file FILENAME. If FILENAME is not'
-    print 'specified, settings will be loaded from /etc/poold.conf.py.'
-    print
-    print 'The settings file must define a get_upstreams function that takes a'
-    print 'tornado.httputil.HTTPServerRequest and returns a list of strings specifying'
-    print 'upstream hosts to forward the request to. Each hostname may be specified in the'
-    print 'form HOSTNAME:PORT, or HOSTNAME.'
-    print
-    print 'The settings file may also define POOLD_PORT to be an integer value indicating'
-    print 'which port to listen on.'
-    print
-
-    sys.exit(1)
-
-
-if __name__ == '__main__':
-    if len(sys.argv) > 2:
-        usage()
-    elif len(sys.argv) == 2 and sys.argv[1] in ('-h', '--help'):
-        usage()
-    elif len(sys.argv) == 2:
-        filename = sys.argv[1]
-    else:
-        filename = '/etc/poold.conf.py'
-
-    settings = {}
-
-    if not os.access(filename, os.R_OK):
-        print 'Failed to read settings from {}'.format(filename)
-        sys.exit(1)
-
-    execfile(filename, settings, settings)
-
-    if 'get_upstreams' not in settings:
-        print 'Error: get_upstreams function was not found in settings'
-        sys.exit(1)
-
-    port = settings.get('POOLD_PORT', 8000)
-    print 'Listening for connections on port {}'.format(port)
-
-    application = tornado.web.Application([
-        tornado.web.url(r"/.*", PoolingHandler, settings),
-    ], autoreload=True, serve_traceback=True)
-
-    application.listen(port)
-    tornado.ioloop.IOLoop.instance().start()

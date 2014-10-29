@@ -4,6 +4,7 @@
 *.o
 *.po
 *.so
+*.pyc
 pool/pool
 poold.conf.py
 reflectd/reflectd

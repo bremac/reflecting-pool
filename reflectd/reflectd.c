@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -157,7 +158,8 @@ session_write_all(struct session *session)
 
             if (count < 0) {
                 if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                    log_error("failed to write to connection");
+                    if (errno != ECONNRESET)
+                        log_error("failed to write to connection");
                     session_release(&ctx, session);
                 }
 
@@ -568,6 +570,9 @@ main(int argc, char **argv)
     setup_rlimits(max_memory_bytes);
     setuser(username);
     srandom(time(NULL));
+
+    /* Prevent writes on closed sockets from crashing reflectd. */
+    signal(SIGPIPE, SIG_IGN);
 
     log_msg("forwarding packets from 0.0.0.0:%d to %s:%s",
             ctx.listen_port, ctx.forward_host, ctx.forward_port);

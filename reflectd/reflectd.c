@@ -157,12 +157,13 @@ session_write_all(struct session *session)
             count = write(session->fd, segment->dataptr, segment->length);
 
             if (count < 0) {
-                if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                    if (errno != ECONNRESET)
-                        log_error("failed to write to connection");
-                    session_release(&ctx, session);
-                }
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    return;
 
+                if (errno != ECONNRESET && errno != EPIPE)
+                    log_error("failed to write to connection");
+
+                session_release(&ctx, session);
                 return;
             }
 

@@ -179,10 +179,8 @@ session_allocate(struct context *ctx, uint32_t source_ip,
             break;
     }
 
-    if (i >= ctx->max_connections) {
-        log_msg("no available session found");
+    if (i >= ctx->max_connections)
         return NULL;
-    }
 
     if (session->is_used)
         session_release(ctx, session);

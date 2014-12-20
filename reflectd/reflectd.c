@@ -174,9 +174,8 @@ session_write_all(struct session *session)
             }
         }
 
-        if (segment->fin) {
+        if (segment->fin)
             shutdown(session->fd, SHUT_WR);
-        }
 
         if (segment->rst) {
             session_release(&ctx, session);

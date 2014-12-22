@@ -78,6 +78,50 @@ test_checksums(void)
     assert(!is_tcp_checksum_valid(ip_header, tcp_header));
 }
 
+uint32_t *
+parse_const_ips(const char *immutable)
+{
+    uint32_t *ips;
+    char *mutable;
+
+    mutable = strdup(immutable);
+    assert(mutable != NULL);
+    ips = parse_ips(mutable);
+    free(mutable);
+
+    return ips;
+}
+
+void
+test_parse_ips(void)
+{
+    uint32_t *ips;
+
+    ips = parse_const_ips("");
+    assert(ips[0] == 0x00);
+    free(ips);
+
+    ips = parse_const_ips("127.0.0.1");
+    assert(ips[0] == 0x7f000001);
+    assert(ips[1] == 0x00);
+    free(ips);
+
+    ips = parse_const_ips("127.0.0.1 8.8.8.8");
+    assert(ips[0] == 0x7f000001);
+    assert(ips[1] == 0x08080808);
+    assert(ips[2] == 0x00);
+    free(ips);
+
+    ips = parse_const_ips("127.0.0.1\t8.8.8.8");
+    assert(ips[0] == 0x7f000001);
+    assert(ips[1] == 0x08080808);
+    assert(ips[2] == 0x00);
+    free(ips);
+
+    ips = parse_const_ips("foobar");
+    assert(ips == NULL);
+}
+
 void
 test_config(void)
 {
@@ -333,6 +377,7 @@ main(void)
 {
     test_adjust_seq();
     test_checksums();
+    test_parse_ips();
     test_config();
     test_localaddrs();
     test_context();

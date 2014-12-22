@@ -487,6 +487,11 @@ parse_config(const char *filename, struct context *ctx)
             username = xstrdup(value);
         } else if (!strcmp(key, "log-filename")) {
             log_filename = xstrdup(value);
+        } else if (!strcmp(key, "listen-hosts")) {
+            /* TODO: support dynamic IP assignments to hostnames? */
+            ctx->listen_ips = parse_ips(value);
+            if (ctx->listen_ips == NULL)
+                errx(1, "failed to load configuration");
         } else if (!strcmp(key, "listen-port")) {
             ctx->listen_port = strtonum(value, 1, 65535, &error_msg);
         } else if (!strcmp(key, "forward-host")) {
@@ -527,6 +532,8 @@ parse_config(const char *filename, struct context *ctx)
     if (ctx->forward_port == NULL)
         errx(1, "configuration error: forward-port was not specified");
 
+    if (ctx->listen_ips == NULL)
+        ctx->listen_ips = load_local_addresses();
     if (ctx->forward_percentage == 0)
         ctx->forward_percentage = 100;
     if (ctx->max_connections == 0)
@@ -552,13 +559,13 @@ main(int argc, char **argv)
          exit(1);
     }
 
+    setup_logging(NULL);  /* log to stderr until config is loaded */
     parse_config(argc == 2 ? argv[1] : "/etc/reflectd.conf", &ctx);
 
     if (!context_init(&ctx, ctx.max_connections))
         errx(1, "failed to allocate memory for %d connections",
              ctx.max_connections);
 
-    ctx.listen_ips = load_local_addresses();
     setup_logging(log_filename);
     raw_fd = setup_raw_fd(ctx.listen_ips, ctx.listen_port);
 

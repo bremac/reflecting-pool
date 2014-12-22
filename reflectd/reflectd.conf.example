@@ -2,7 +2,10 @@ daemonize		false
 username		nobody
 log-filename		-
 
+# omit listen-hosts directive to bind to all local addresses
+listen-hosts            127.0.0.1
 listen-port		9000
+
 forward-host		localhost
 forward-port		9001
 forward-percentage	100

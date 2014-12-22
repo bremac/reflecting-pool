@@ -7,9 +7,8 @@
 #include <stdlib.h>
 
 
-static struct sock_filter *
-bpf_extend(struct sock_fprog *bpf, size_t *capacity, uint16_t code,
-           uint8_t jt, uint8_t jf, uint32_t k)
+static void
+bpf_extend(struct sock_fprog *bpf, size_t *capacity, uint16_t code, uint32_t k)
 {
     struct sock_filter *filter;
 
@@ -25,24 +24,27 @@ bpf_extend(struct sock_fprog *bpf, size_t *capacity, uint16_t code,
 
     filter = &bpf->filter[bpf->len - 1];
     filter->code = code;
-    filter->jt = jt;
-    filter->jf = jf;
+    filter->jt = 0;
+    filter->jf = 0;
     filter->k = k;
-
-    return filter;
 }
 
-static inline uint8_t
-jump_target(struct sock_fprog *bpf, struct sock_filter *from)
+static inline void
+bpf_set_jt(struct sock_fprog *bpf, size_t position)
 {
-    return &bpf->filter[bpf->len] - from - 1;
+    bpf->filter[position].jt = bpf->len - position - 1;
 }
 
+static inline void
+bpf_set_jf(struct sock_fprog *bpf, size_t position)
+{
+    bpf->filter[position].jf = bpf->len - position - 1;
+}
 
-#define LDBIND    (BPF_LD | BPF_B | BPF_IND)
-#define LDHIND    (BPF_LD | BPF_H | BPF_IND)
-#define LDWABS    (BPF_LD | BPF_W | BPF_ABS)
-#define LDMSHXB   (BPF_LDX | BPF_B | BPF_MSH)
+#define LDIND_B   (BPF_LD | BPF_B | BPF_IND)
+#define LDIND_H   (BPF_LD | BPF_H | BPF_IND)
+#define LDABS_W   (BPF_LD | BPF_W | BPF_ABS)
+#define LDMSHX_B  (BPF_LDX | BPF_B | BPF_MSH)
 #define JAND      (BPF_JMP | BPF_JSET | BPF_K)
 #define JEQ       (BPF_JMP | BPF_JEQ | BPF_K)
 #define RET       (BPF_RET | BPF_K)
@@ -55,18 +57,14 @@ jump_target(struct sock_fprog *bpf, struct sock_filter *from)
 #define SRC_IP    12
 #define SRC_PORT   0
 
-#define RET_FAIL   0
-#define RET_PASS  -1
-
-
 void
 bpf_attach(int raw_fd, uint32_t *addrs, uint16_t listen_port)
 {
     struct sock_fprog bpf;
-    struct sock_filter *check_port, *check_rst;
+    size_t check_dest_port, check_src_port, check_rst;
+    size_t check_src_ip, check_dest_ip;
     size_t capacity;
     int addr_count, i;
-    uint32_t rst = 0x20;
 
     for (addr_count = 0; addrs[addr_count]; addr_count++)
         ;
@@ -78,34 +76,61 @@ bpf_attach(int raw_fd, uint32_t *addrs, uint16_t listen_port)
     if (bpf.filter == NULL)
         err(1, "failed to allocate space for packet filter");
 
-    bpf_extend(&bpf, &capacity, LDMSHXB, 0, 0, 0);
-    bpf_extend(&bpf, &capacity, LDBIND,  0, 0, FLAGS);
-    check_rst = bpf_extend(&bpf, &capacity, JAND, 0, -1, rst);
+    /*   LDMSHX.B 0
+     *   LDIND.B  FLAGS
+     *   JNAND    RST, CheckDest */
+    bpf_extend(&bpf, &capacity, LDMSHX_B, 0);
+    bpf_extend(&bpf, &capacity, LDIND_B, FLAGS);
+    check_rst = bpf.len;
+    bpf_extend(&bpf, &capacity, JAND, 0x20);
 
-    /* If RST, check that it's from the monitored port. */
-    bpf_extend(&bpf, &capacity, LDHIND, 0, 0, SRC_PORT);
-    check_port = bpf_extend(&bpf, &capacity, JEQ, 0, -1, listen_port);
-    bpf_extend(&bpf, &capacity, LDWABS, 0, 0, SRC_IP);
+    /*   LDIND.H  SRC_PORT
+     *   JNE      LISTEN_PORT, CheckDest
+     *   LDABS.W  SRC_IP */
+    bpf_extend(&bpf, &capacity, LDIND_H, SRC_PORT);
+    check_src_port = bpf.len;
+    bpf_extend(&bpf, &capacity, JEQ, listen_port);
+    bpf_extend(&bpf, &capacity, LDABS_W, SRC_IP);
 
+    /*   JEQ      ADDR_0, Pass
+     *   JEQ      ADDR_1, Pass
+     *   ... */
+    check_src_ip = bpf.len;
     for (i = 0; i < addr_count; i++)
-        bpf_extend(&bpf, &capacity, JEQ, addr_count - i, 0, addrs[i]);
+        bpf_extend(&bpf, &capacity, JEQ, addrs[i]);
 
-    check_port->jf = jump_target(&bpf, check_port);
-    bpf_extend(&bpf, &capacity, RET, 0, 0, RET_FAIL);
-    bpf_extend(&bpf, &capacity, RET, 0, 0, RET_PASS);
+    /* CheckDest: */
+    bpf_set_jf(&bpf, check_rst);
+    bpf_set_jf(&bpf, check_src_port);
 
-    /* If !RST, check that it's to the monitored port. */
-    check_rst->jf = jump_target(&bpf, check_rst);
-    bpf_extend(&bpf, &capacity, LDHIND, 0, 0, DEST_PORT);
-    check_port = bpf_extend(&bpf, &capacity, JEQ, 0, -1, listen_port);
-    bpf_extend(&bpf, &capacity, LDWABS, 0, 0, DEST_IP);
+    /*   LDIND.H  DEST_PORT
+     *   JNE      LISTEN_PORT, Fail
+     *   LDABS.W  DEST_IP */
+    bpf_extend(&bpf, &capacity, LDIND_H, DEST_PORT);
+    check_dest_port = bpf.len;
+    bpf_extend(&bpf, &capacity, JEQ, listen_port);
+    bpf_extend(&bpf, &capacity, LDABS_W, DEST_IP);
 
+    /*   JEQ      ADDR_0, Pass
+     *   JEQ      ADDR_1, Pass
+     *   ... */
+    check_dest_ip = bpf.len;
     for (i = 0; i < addr_count; i++)
-        bpf_extend(&bpf, &capacity, JEQ, addr_count - i, 0, addrs[i]);
+        bpf_extend(&bpf, &capacity, JEQ, addrs[i]);
 
-    check_port->jf = jump_target(&bpf, check_port);
-    bpf_extend(&bpf, &capacity, RET, 0, 0, RET_FAIL);
-    bpf_extend(&bpf, &capacity, RET, 0, 0, RET_PASS);
+    /* Fail:
+     *   RET      0 */
+    bpf_set_jf(&bpf, check_dest_port);
+    bpf_extend(&bpf, &capacity, RET, 0);
+
+    /* Pass:
+     *   RET      -1 */
+    for (i = 0; i < addr_count; i++) {
+        bpf_set_jt(&bpf, check_src_ip + i);
+        bpf_set_jt(&bpf, check_dest_ip + i);
+    }
+
+    bpf_extend(&bpf, &capacity, RET, -1);
 
     if (setsockopt(raw_fd, SOL_SOCKET, SO_ATTACH_FILTER, &bpf, sizeof(bpf)) < 0)
         err(1, "failed to attach packet filter");

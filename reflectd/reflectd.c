@@ -19,9 +19,9 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "addrset.h"
 #include "bpf.h"
 #include "checksum.h"
-#include "localaddrs.h"
 #include "sessions.h"
 #include "util.h"
 
@@ -248,7 +248,7 @@ read_packet(uint8_t *buffer, size_t total_len, struct packet_in *pkt)
     /* Discard packets from other machines with bad checksums.
      * Don't check packets from the local machine, as these are usually
      * wrong until they hit the NIC due to checksum offloading. */
-    if (!is_local_address(ctx.listen_ips, pkt->source_ip)
+    if (!addrset_contains(ctx.local_ips, pkt->source_ip)
         && !are_checksums_valid(ip_header, tcp_header)) {
         log_msg("packet has an invalid checksum");
         return -1;
@@ -264,12 +264,12 @@ dispatch_packet(struct packet_in *pkt)
     struct segment *segment = NULL;
 
     if (pkt->rst && pkt->source_port == ctx.listen_port
-        && is_local_address(ctx.listen_ips, pkt->source_ip)) {
+        && addrset_contains(ctx.listen_ips, pkt->source_ip)) {
         session = session_find(&ctx, pkt->dest_ip, pkt->dest_port);
         session_release(&ctx, session);
     }
 
-    if (!is_local_address(ctx.listen_ips, pkt->dest_ip) ||
+    if (!addrset_contains(ctx.listen_ips, pkt->dest_ip) ||
         pkt->dest_port != ctx.listen_port) {
         log_msg("received unexpected packet");
         return;
@@ -476,6 +476,7 @@ parse_config(const char *filename, struct context *ctx)
     int ret;
 
     memset(ctx, 0, sizeof(*ctx));
+    ctx->local_ips = addrset_local();
 
     if ((fp = fopen(filename, "r")) == NULL)
         err(1, "failed to read %s", filename);
@@ -489,7 +490,7 @@ parse_config(const char *filename, struct context *ctx)
             log_filename = xstrdup(value);
         } else if (!strcmp(key, "listen-hosts")) {
             /* TODO: support dynamic IP assignments to hostnames? */
-            ctx->listen_ips = parse_ips(value);
+            ctx->listen_ips = addrset_from_string(value);
             if (ctx->listen_ips == NULL)
                 errx(1, "failed to load configuration");
         } else if (!strcmp(key, "listen-port")) {
@@ -533,7 +534,7 @@ parse_config(const char *filename, struct context *ctx)
         errx(1, "configuration error: forward-port was not specified");
 
     if (ctx->listen_ips == NULL)
-        ctx->listen_ips = load_local_addresses();
+        ctx->listen_ips = ctx->local_ips;
     if (ctx->forward_percentage == 0)
         ctx->forward_percentage = 100;
     if (ctx->max_connections == 0)
@@ -560,6 +561,7 @@ main(int argc, char **argv)
     }
 
     setup_logging(NULL);  /* log to stderr until config is loaded */
+
     parse_config(argc == 2 ? argv[1] : "/etc/reflectd.conf", &ctx);
 
     if (!context_init(&ctx, ctx.max_connections))

@@ -7,7 +7,7 @@ SRCS = tests.c
 SRCS +=
 
 # reflector
-SRCS += checksum.c localaddrs.c sessions.c
+SRCS += addrset.c checksum.c sessions.c
 DPLIBS = ${LIBUTIL}
 
 all: ${PROG}

@@ -6,8 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "addrset.h"
 #include "checksum.h"
-#include "localaddrs.h"
 #include "sessions.h"
 #include "util.h"
 
@@ -17,11 +17,11 @@ static uint32_t LISTEN_IPS[] = { 0x7f000001, 0x00 };
 void
 test_localaddrs(void)
 {
-    uint32_t *addrs = load_local_addresses();
+    uint32_t *addrs = addrset_local();
 
     assert(addrs != NULL);
-    assert(is_local_address(addrs, 0x7f000001));  /* localhost */
-    assert(!is_local_address(addrs, 0x08080808)); /* Google's DNS. */
+    assert(addrset_contains(addrs, 0x7f000001));  /* localhost */
+    assert(!addrset_contains(addrs, 0x08080808)); /* Google's DNS. */
 
     free(addrs);
 }
@@ -86,7 +86,7 @@ parse_const_ips(const char *immutable)
 
     mutable = strdup(immutable);
     assert(mutable != NULL);
-    ips = parse_ips(mutable);
+    ips = addrset_from_string(mutable);
     free(mutable);
 
     return ips;

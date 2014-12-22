@@ -31,6 +31,7 @@ struct session {
 };
 
 struct context {
+    uint32_t *local_ips;
     uint32_t *listen_ips;
     int listen_port;
 

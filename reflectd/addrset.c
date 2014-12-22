@@ -8,10 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "localaddrs.h"
+#include "addrset.h"
 #include "util.h"
 
-/* XXX: rename localaddr -> addrset */
 
 static void *
 xrealloc(void *ptr, size_t size)
@@ -30,7 +29,7 @@ valid_address(struct ifaddrs *ifaddr)
 }
 
 uint32_t *
-parse_ips(char *s)
+addrset_from_string(char *s)
 {
     struct in_addr addr;
     uint32_t *ips;
@@ -65,7 +64,7 @@ parse_ips(char *s)
 }
 
 uint32_t *
-load_local_addresses(void)
+addrset_local(void)
 {
     struct sockaddr_in *sockaddr_in;
     struct ifaddrs *first, *cur;
@@ -104,7 +103,7 @@ load_local_addresses(void)
 }
 
 int
-is_local_address(uint32_t *addrs, uint32_t addr)
+addrset_contains(uint32_t *addrs, uint32_t addr)
 {
     for (; *addrs; addrs++) {
         if (*addrs == addr)

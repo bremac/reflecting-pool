@@ -2,7 +2,6 @@
 #include <netinet/tcp.h>
 
 #include <stdint.h>
-#include <stdio.h> // TESTING
 
 
 static uint16_t

@@ -21,7 +21,9 @@ test_localaddrs(void)
 
     assert(addrs != NULL);
     assert(addrset_contains(addrs, 0x7f000001));  /* localhost */
-    assert(!addrset_contains(addrs, 0x08080808)); /* Google's DNS. */
+
+    /* 192.0.2.0/24 is reserved for TEST-NET by RFC 5737, so will be unused. */
+    assert(!addrset_contains(addrs, 0xc0000200));
 
     free(addrs);
 }
@@ -209,6 +211,7 @@ void
 setup_context(struct context *ctx)
 {
     memset(ctx, 0, sizeof(&ctx));
+    ctx->local_ips = LISTEN_IPS;
     ctx->listen_ips = LISTEN_IPS;
     ctx->listen_port = 9001;
     ctx->forward_percentage = 100;

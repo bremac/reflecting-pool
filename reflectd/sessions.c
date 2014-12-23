@@ -44,6 +44,8 @@ context_teardown(struct context *ctx)
         session_release(ctx, &ctx->sessions[i]);
     }
 
+    /* XXX: ctx->local_ips and ctx->listen_ips must be freed by caller */
+
     free(ctx->lookup);
     free(ctx->sessions);
 }
